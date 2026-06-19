@@ -1,0 +1,71 @@
+---
+tracker:
+  kind: github
+  owner: OWNER
+  repo: REPOSITORY
+  api_url: https://api.github.com
+  api_version: "2022-11-28"
+  active_states:
+    - open
+  terminal_states:
+    - closed
+  required_labels:
+    - codex
+  excluded_labels:
+    - do-not-run
+  blocked_labels:
+    - blocked
+  priority_labels:
+    - priority:urgent
+    - priority:high
+    - priority:medium
+    - priority:low
+  # assignee_login: your-codex-bot
+  use_issue_dependencies: true
+  poll_interval_ms: 30000
+
+repository:
+  # clone_url defaults to https://github.com/<tracker.owner>/<tracker.repo>.git
+  # clone_url: https://github.com/OWNER/REPOSITORY.git
+  default_branch: main
+  target_dir: /workspace/repo
+
+agent:
+  max_concurrent_agents: 3
+  max_turns: 5
+  max_retry_attempts: 5
+  retry_base_ms: 10000
+  turn_timeout_ms: 2700000
+  model: "@cf/zai-org/glm-5.2"
+
+sandbox:
+  sleep_after: 15m
+  backup_ttl_seconds: 604800
+
+hooks:
+  # These commands are trusted deployment configuration and run inside the repository.
+  # after_create: bun install --frozen-lockfile
+  # before_run: git status --short
+  # after_run: bun test
+---
+You are implementing GitHub issue {{ issue.identifier }} in the checked-out repository.
+
+Title: {{ issue.title }}
+URL: {{ issue.url }}
+Repository: {{ issue.repository }}
+Issue number: {{ issue.number }}
+Current state: {{ issue.state }}
+Labels: {{ issue.labels | join: ", " }}
+Attempt: {{ attempt }}
+
+Description:
+{{ issue.description }}
+
+Requirements:
+- Inspect the repository before changing it.
+- Implement the issue completely, including tests and documentation that are relevant to the change.
+- Run the most relevant validation commands.
+- Keep all changes inside the repository workspace.
+- Do not wait for interactive operator input. Make a reasonable engineering decision when details are underspecified.
+- Do not push, merge, close the issue, or create a pull request unless the workflow hooks and token permissions explicitly authorize those actions.
+- Record meaningful progress in the repository and leave the workspace in a reviewable state.

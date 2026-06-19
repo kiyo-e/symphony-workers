@@ -1,0 +1,7 @@
+GITHUB_TOKEN=github_pat_replace_me
+GITHUB_WEBHOOK_SECRET=replace_me
+CLOUDFLARE_ACCOUNT_ID=replace_me
+CLOUDFLARE_GATEWAY_ID=replace_me
+CLOUDFLARE_API_TOKEN=replace_me
+R2_ACCESS_KEY_ID=replace_me
+R2_SECRET_ACCESS_KEY=replace_me

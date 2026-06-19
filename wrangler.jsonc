@@ -1,0 +1,53 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "symphony-cloudflare-github",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-12",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "PROJECT_KEY": "default",
+    "BACKUP_BUCKET_NAME": "symphony-workspaces"
+  },
+  "rules": [
+    {
+      "type": "Text",
+      "globs": ["**/*.md"],
+      "fallthrough": true
+    }
+  ],
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "image": "./Dockerfile",
+      "instance_type": "basic",
+      "max_instances": 10
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "Sandbox",
+        "name": "Sandbox"
+      },
+      {
+        "class_name": "ProjectOrchestrator",
+        "name": "ORCHESTRATOR"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "new_sqlite_classes": ["Sandbox", "ProjectOrchestrator"],
+      "tag": "v1"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "BACKUP_BUCKET",
+      "bucket_name": "symphony-workspaces"
+    }
+  ]
+}
