@@ -1,5 +1,5 @@
-import type { GitHubIssue, GitHubIssueRef, WorkflowConfig } from "./types";
-import { normalize } from "./util";
+import type { GitHubIssue, GitHubIssueComment, GitHubIssueRef, WorkflowConfig } from "./types";
+import { fnv1a, normalize, truncate } from "./util";
 
 const PAGE_SIZE = 100;
 const MAX_PAGES = 20;
@@ -22,6 +22,15 @@ interface GitHubApiIssue {
   created_at?: string | null;
   updated_at?: string | null;
   pull_request?: unknown;
+}
+
+interface GitHubApiIssueComment {
+  id?: number;
+  body?: string | null;
+  html_url?: string | null;
+  user?: { login?: string | null } | null;
+  created_at?: string | null;
+  updated_at?: string | null;
 }
 
 interface GitHubErrorPayload {
@@ -89,6 +98,36 @@ export class GitHubClient {
     );
 
     return issues.filter((issue): issue is GitHubIssue => issue !== null);
+  }
+
+  async fetchWithComments(issue: GitHubIssue): Promise<GitHubIssue> {
+    const raw = await this.request<GitHubApiIssue | undefined>(
+      `/repos/${encodeURIComponent(this.config.owner)}/${encodeURIComponent(this.config.repo)}` +
+        `/issues/${issue.number}`,
+      { allowNotFound: true },
+    );
+    if (!raw || raw.pull_request !== undefined) return issue;
+    const refreshed = normalizeIssue(raw, this.config);
+    if (!refreshed) return issue;
+    return { ...refreshed, comments: await this.fetchComments(issue.number) };
+  }
+
+  async fetchComments(issueNumber: number): Promise<GitHubIssueComment[]> {
+    const comments: GitHubIssueComment[] = [];
+    for (let page = 1; page <= MAX_PAGES; page += 1) {
+      const params = new URLSearchParams({
+        per_page: String(PAGE_SIZE),
+        page: String(page),
+      });
+      const raw = await this.request<GitHubApiIssueComment[]>(
+        `/repos/${encodeURIComponent(this.config.owner)}/${encodeURIComponent(this.config.repo)}` +
+          `/issues/${issueNumber}/comments?${params}`,
+      );
+      comments.push(...raw.map(normalizeComment).filter((comment): comment is GitHubIssueComment => comment !== null));
+      if (raw.length < PAGE_SIZE) return comments;
+    }
+
+    throw new Error(`GitHub issue comment pagination exceeded for #${issueNumber}`);
   }
 
   async populateBlockers(issue: GitHubIssue): Promise<GitHubIssue> {
@@ -189,10 +228,57 @@ function normalizeIssue(raw: GitHubApiIssue, config: WorkflowConfig["tracker"]):
     assigneeLogin: assignees[0] ?? null,
     assigneeLogins: assignees,
     labels,
+    comments: [],
     blockedBy: [],
     createdAt: raw.created_at ?? null,
     updatedAt: raw.updated_at ?? null,
   };
+}
+
+function normalizeComment(raw: GitHubApiIssueComment): GitHubIssueComment | null {
+  if (!Number.isSafeInteger(raw.id) || !raw.id) return null;
+  return {
+    id: raw.id,
+    authorLogin: raw.user?.login ?? null,
+    body: truncate(raw.body ?? "", 8_000) ?? "",
+    createdAt: raw.created_at ?? null,
+    updatedAt: raw.updated_at ?? null,
+    url: raw.html_url ?? null,
+  };
+}
+
+function actorSet(agentLogins: string[]): Set<string> {
+  return new Set(agentLogins.map(normalize).filter(Boolean));
+}
+
+export function isIgnoredActor(login: string | null | undefined, agentLogins: string[]): boolean {
+  const normalized = normalize(login);
+  if (!normalized) return false;
+  return actorSet(agentLogins).has(normalized) || normalized.endsWith("[bot]");
+}
+
+export function actionableComments(
+  comments: GitHubIssueComment[],
+  agentLogins: string[],
+): GitHubIssueComment[] {
+  return comments.filter((comment) => !isIgnoredActor(comment.authorLogin, agentLogins));
+}
+
+export function contextFingerprint(issue: GitHubIssue, agentLogins: string[]): string {
+  const payload = {
+    title: issue.title,
+    description: issue.description,
+    state: issue.state,
+    labels: issue.labels.map(normalize).sort(),
+    assignees: issue.assigneeLogins.map(normalize).sort(),
+    comments: actionableComments(issue.comments, agentLogins).map((comment) => ({
+      id: comment.id,
+      authorLogin: normalize(comment.authorLogin),
+      body: comment.body,
+      updatedAt: comment.updatedAt,
+    })),
+  };
+  return fnv1a(JSON.stringify(payload));
 }
 
 function normalizeIssueRef(raw: GitHubApiIssue, fallbackRepository: string): GitHubIssueRef | null {

@@ -7,6 +7,15 @@ export interface GitHubIssueRef {
   state: string;
 }
 
+export interface GitHubIssueComment {
+  id: number;
+  authorLogin: string | null;
+  body: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+  url: string | null;
+}
+
 export interface GitHubIssue {
   /** Repository-scoped stable key. This is the issue number encoded as a string. */
   id: string;
@@ -24,6 +33,7 @@ export interface GitHubIssue {
   assigneeLogin: string | null;
   assigneeLogins: string[];
   labels: string[];
+  comments: GitHubIssueComment[];
   blockedBy: GitHubIssueRef[];
   createdAt: string | null;
   updatedAt: string | null;
@@ -43,6 +53,7 @@ export interface WorkflowConfig {
     blocked_labels: string[];
     priority_labels: string[];
     assignee_login?: string;
+    agent_logins: string[];
     use_issue_dependencies: boolean;
     poll_interval_ms: number;
   };
@@ -76,7 +87,7 @@ export interface LoadedWorkflow {
   renderPrompt(issue: GitHubIssue, attempt: number): Promise<string>;
 }
 
-export type JobPhase = "starting" | "running" | "waiting" | "blocked";
+export type JobPhase = "starting" | "running" | "waiting" | "idle" | "blocked";
 export type WaitKind = "retry" | "continuation";
 
 export interface AgentProviderConfig {
@@ -104,6 +115,8 @@ export interface JobRecord {
   startedAt?: number;
   lastActivityAt?: number;
   nextRunAt?: number;
+  contextFingerprint?: string;
+  processingContextFingerprint?: string;
   lastError?: string;
   lastResponse?: string;
   lastUsage?: unknown;
@@ -190,6 +203,7 @@ export interface StatusSnapshot {
   running: number;
   waiting: number;
   blocked: number;
+  idle: number;
   jobs: Array<{
     issueId: string;
     issueNumber: number;
@@ -204,6 +218,7 @@ export interface StatusSnapshot {
     threadId?: string;
     startedAt?: number;
     nextRunAt?: number;
+    contextFingerprint?: string;
     lastError?: string;
     backup?: Pick<DirectoryBackup, "id" | "dir">;
   }>;

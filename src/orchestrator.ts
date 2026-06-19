@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { getSandbox, type DirectoryBackup, type Process as SandboxProcess } from "@cloudflare/sandbox";
 import {
+  contextFingerprint,
   GitHubClient,
   hasBlockingLabel,
   hasNonTerminalBlocker,
@@ -112,6 +113,7 @@ export class ProjectOrchestrator extends DurableObject<Env> {
       lastError: state.lastError,
       running: jobs.filter((job) => job.phase === "running" || job.phase === "starting").length,
       waiting: jobs.filter((job) => job.phase === "waiting").length,
+      idle: jobs.filter((job) => job.phase === "idle").length,
       blocked: jobs.filter((job) => job.phase === "blocked").length,
       jobs: jobs
         .map((job) => ({
@@ -128,6 +130,7 @@ export class ProjectOrchestrator extends DurableObject<Env> {
           threadId: job.threadId,
           startedAt: job.startedAt,
           nextRunAt: job.nextRunAt,
+          contextFingerprint: job.contextFingerprint,
           lastError: job.lastError,
           backup: job.backup,
         }))
@@ -140,7 +143,7 @@ export class ProjectOrchestrator extends DurableObject<Env> {
     const state = await this.loadState();
     const job = state.jobs[issueId];
     if (!job) throw new Error(`Unknown issue id: ${issueId}`);
-    if (job.phase !== "blocked" && job.phase !== "waiting") {
+    if (job.phase !== "blocked" && job.phase !== "waiting" && job.phase !== "idle") {
       throw new Error(`Issue ${job.issue.identifier} is ${job.phase} and cannot be retried`);
     }
 
@@ -224,7 +227,8 @@ export class ProjectOrchestrator extends DurableObject<Env> {
     try {
       const github = new GitHubClient(this.env.GITHUB_TOKEN, config.tracker);
       await this.reconcileTrackedIssues(state, github, config);
-      await this.startDueJobs(state, workflow, config);
+      await this.reconcileIdleJobs(state, github, config);
+      await this.startDueJobs(state, github, workflow, config);
       await this.dispatchCandidates(state, github, workflow, config);
     } catch (error) {
       cycleErrors.push(`tracker reconciliation: ${errorMessage(error)}`);
@@ -265,6 +269,34 @@ export class ProjectOrchestrator extends DurableObject<Env> {
           : "unroutable";
         await this.finishJob(state, job, outcome, config, true);
       }
+    }
+  }
+
+  private async reconcileIdleJobs(
+    state: OrchestratorState,
+    github: GitHubClient,
+    config: WorkflowConfig,
+  ): Promise<void> {
+    for (const job of Object.values(state.jobs)) {
+      if (job.phase !== "idle") continue;
+
+      job.issue = await github.fetchWithComments(job.issue);
+      if (!isRoutable(job.issue, config.tracker)) {
+        const outcome = config.tracker.terminal_states.some(
+          (stateName) => stateName.trim().toLowerCase() === job.issue.state.trim().toLowerCase(),
+        )
+          ? "terminal"
+          : "unroutable";
+        await this.finishJob(state, job, outcome, config, true);
+        continue;
+      }
+
+      const nextFingerprint = contextFingerprint(job.issue, config.tracker.agent_logins);
+      if (job.contextFingerprint && nextFingerprint === job.contextFingerprint) continue;
+
+      job.phase = "waiting";
+      job.waitKind = "continuation";
+      job.nextRunAt = Date.now() + CONTINUATION_DELAY_MS;
     }
   }
 
@@ -315,9 +347,11 @@ export class ProjectOrchestrator extends DurableObject<Env> {
         job.lastUsage = result.usage;
         job.lastError = undefined;
         job.processId = undefined;
-        job.phase = "waiting";
-        job.waitKind = "continuation";
-        job.nextRunAt = Date.now() + CONTINUATION_DELAY_MS;
+        job.phase = "idle";
+        job.waitKind = undefined;
+        job.nextRunAt = undefined;
+        job.contextFingerprint = job.processingContextFingerprint ?? job.contextFingerprint;
+        job.processingContextFingerprint = undefined;
         job.backup = await this.backupWorkspace(job, config);
         job.restoreOnStart = false;
         continue;
@@ -337,6 +371,7 @@ export class ProjectOrchestrator extends DurableObject<Env> {
 
   private async startDueJobs(
     state: OrchestratorState,
+    github: GitHubClient,
     workflow: ReturnType<typeof loadWorkflow>,
     config: WorkflowConfig,
   ): Promise<void> {
@@ -350,7 +385,7 @@ export class ProjectOrchestrator extends DurableObject<Env> {
         await this.blockJob(job, config, `agent.max_turns (${config.agent.max_turns}) reached`);
         continue;
       }
-      await this.startTurn(state, job, workflow, config);
+      await this.startTurn(state, github, job, workflow, config);
     }
   }
 
@@ -383,12 +418,13 @@ export class ProjectOrchestrator extends DurableObject<Env> {
       };
       state.jobs[issue.id] = job;
       await this.saveState(state);
-      await this.startTurn(state, job, workflow, config);
+      await this.startTurn(state, github, job, workflow, config);
     }
   }
 
   private async startTurn(
     state: OrchestratorState,
+    github: GitHubClient,
     job: JobRecord,
     workflow: ReturnType<typeof loadWorkflow>,
     config: WorkflowConfig,
@@ -428,12 +464,19 @@ export class ProjectOrchestrator extends DurableObject<Env> {
       }
 
       await sandbox.mkdir("/workspace/.symphony", { recursive: true });
+      job.issue = await github.fetchWithComments(job.issue);
+      job.processingContextFingerprint = contextFingerprint(
+        job.issue,
+        config.tracker.agent_logins,
+      );
       const initialPrompt = await workflow.renderPrompt(job.issue, job.attempt);
       const prompt = job.threadId
         ? [
             `Continue the existing implementation run for ${job.issue.identifier}.`,
-            "The GitHub issue is still open and routable. Resume from the current workspace and thread context.",
-            "Run the relevant checks and finish the remaining work. Do not merely restate prior progress.",
+            "The GitHub issue is still open and routable, and its issue context changed since the last completed run.",
+            "Resume from the current workspace and thread context. Use the latest GitHub issue context below as the current source of truth.",
+            "",
+            initialPrompt,
           ].join("\n")
         : initialPrompt;
 

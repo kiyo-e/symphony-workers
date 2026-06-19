@@ -1,5 +1,6 @@
 import { Sandbox as BaseSandbox } from "@cloudflare/sandbox";
 import { Hono } from "hono";
+import { isIgnoredActor } from "./github";
 import { loadWorkflow } from "./workflow";
 
 export { ContainerProxy } from "@cloudflare/sandbox";
@@ -65,6 +66,7 @@ Sandbox.outboundByHost = {
 interface GitHubWebhookPayload {
   action?: string;
   zen?: string;
+  sender?: { login?: string | null } | null;
   repository?: { full_name?: string | null } | null;
 }
 
@@ -100,6 +102,8 @@ const RELEVANT_ISSUE_ACTIONS = new Set([
   "typed",
   "untyped",
 ]);
+
+const RELEVANT_ISSUE_COMMENT_ACTIONS = new Set(["created", "edited", "deleted"]);
 
 function orchestrator(env: Env) {
   return env.ORCHESTRATOR.getByName(env.PROJECT_KEY || "default");
@@ -174,7 +178,15 @@ async function verifyGitHubWebhook(request: Request, env: Env): Promise<Verified
 
 function shouldWakeOrchestrator(event: string, action: string | undefined): boolean {
   if (event === "issue_dependencies") return typeof action === "string" && action.length > 0;
+  if (event === "issue_comment") {
+    return typeof action === "string" && RELEVANT_ISSUE_COMMENT_ACTIONS.has(action);
+  }
   return event === "issues" && typeof action === "string" && RELEVANT_ISSUE_ACTIONS.has(action);
+}
+
+function shouldIgnoreSender(event: string, action: string | undefined, login: string | null | undefined): boolean {
+  if (event !== "issue_comment" && !(event === "issues" && action === "edited")) return false;
+  return isIgnoredActor(login, loadWorkflow().config.tracker.agent_logins);
 }
 
 function errorResponse(error: unknown): Response {
@@ -204,6 +216,19 @@ app.post("/webhooks/github", async (c) => {
     if (!shouldWakeOrchestrator(webhook.event, webhook.body.action)) {
       return Response.json(
         { ok: true, ignored: true, event: webhook.event, action: webhook.body.action ?? null },
+        { status: 202 },
+      );
+    }
+
+    if (shouldIgnoreSender(webhook.event, webhook.body.action, webhook.body.sender?.login)) {
+      return Response.json(
+        {
+          ok: true,
+          ignored: true,
+          event: webhook.event,
+          action: webhook.body.action ?? null,
+          sender: webhook.body.sender?.login ?? null,
+        },
         { status: 202 },
       );
     }

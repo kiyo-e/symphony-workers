@@ -21,6 +21,10 @@ tracker:
     - priority:medium
     - priority:low
   # assignee_login: your-codex-bot
+  # Comments and issue-body edits from these logins are ignored as wake signals.
+  # GitHub bot accounts ending in "[bot]" are also ignored.
+  agent_logins:
+    - your-codex-bot
   use_issue_dependencies: true
   poll_interval_ms: 30000
 
@@ -60,6 +64,12 @@ Attempt: {{ attempt }}
 
 Description:
 {{ issue.description }}
+
+Comments:
+{% for comment in issue.comments %}
+- {{ comment.authorLogin }} at {{ comment.updatedAt }}:
+{{ comment.body }}
+{% endfor %}
 
 Requirements:
 - Inspect the repository before changing it.

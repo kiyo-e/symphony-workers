@@ -36,26 +36,29 @@ flowchart LR
 
 ## Execution Flow
 
-1. A GitHub `issues` or `issue_dependencies` webhook reaches the Worker.
+1. A GitHub `issues`, `issue_comment`, or `issue_dependencies` webhook reaches the Worker.
 2. The Worker validates the signature, delivery ID, repository name, event, and action.
 3. The Durable Object fetches the latest issue state from the GitHub REST API.
-4. It evaluates required labels, excluded labels, assignees, blockers, and priority.
+4. It evaluates required labels, excluded labels, assignees, blockers, priority, and issue context changes.
 5. If a concurrency slot is available, it claims the issue in Durable Object storage.
-6. It starts a Sandbox, clones the repository, and runs opencode.
+6. It fetches issue comments, starts a Sandbox, clones the repository, and runs opencode.
 7. The runner atomically writes a JSONL event log and result file to `/workspace/.symphony`.
-8. On success, it saves the workspace to R2 and runs the next turn while the issue is open and still matches the execution rules.
+8. On success, it saves the workspace to R2 and records the processed issue context fingerprint.
 9. On failure, it saves the workspace, destroys the Sandbox, restores the workspace after exponential backoff, and retries.
-10. If the issue is closed, loses the required label, receives an excluded label, or is deleted, the job is terminated.
+10. If the issue body or actionable comments change while the issue remains routable, the next turn is queued.
+11. If the issue is closed, loses the required label, receives an excluded label, or is deleted, the job is terminated.
 
 ## Follow-Up Turns
 
-If an issue remains open, another turn runs after a successful turn. The default configuration does not automatically close GitHub Issues, so choose one of these completion policies:
+After a successful turn, the job becomes idle with the current issue body and actionable comments marked as processed. Another turn runs only when that issue context changes and the issue still matches the routing rules. The default configuration does not automatically close GitHub Issues, so choose one of these completion policies:
 
 - A person or another automation closes the issue.
 - Remove the `codex` label.
 - Add an excluded label such as `do-not-run`.
 - Grant GitHub write permissions and a workflow policy so the agent or hook can update the issue.
 - Keep `agent.max_turns` low and let an operator review jobs that reach the limit.
+
+Comments and issue-body edits from `tracker.agent_logins` are ignored as wake signals. GitHub bot accounts ending in `[bot]` are also ignored to avoid self-triggered loops.
 
 ## GitHub Issue Routing
 
@@ -190,9 +193,10 @@ SSL verification: Enable SSL verification
 Select at least these events:
 
 - Issues
+- Issue comments
 - Issue dependencies, if `use_issue_dependencies: true`
 
-`Ping` is handled as a connectivity check. `issue_comment` is not used by the default implementation, so you do not need to subscribe to it.
+`Ping` is handled as a connectivity check. Issue comments wake the orchestrator, but the Durable Object only starts another turn when the filtered issue context fingerprint changed.
 
 After verifying the webhook, the Worker returns `202 Accepted` and continues Durable Object work with `waitUntil()`. Unknown events and out-of-scope actions are ignored.
 

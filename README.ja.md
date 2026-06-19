@@ -34,26 +34,29 @@ flowchart LR
 
 ## 実行フロー
 
-1. GitHub の `issues` または `issue_dependencies` Webhook が Worker に届きます。
+1. GitHub の `issues`、`issue_comment`、または `issue_dependencies` Webhook が Worker に届きます。
 2. Worker が署名、delivery ID、repository 名、event、action を検証します。
 3. Durable Object が GitHub REST API から最新の Issue 状態を取得します。
-4. 必須ラベル、除外ラベル、担当者、ブロッカー、優先度を評価します。
+4. 必須ラベル、除外ラベル、担当者、ブロッカー、優先度、Issue context の変更を評価します。
 5. 同時実行枠があれば、Issue を Durable Object storage で claim します。
-6. Sandbox を起動し、repository を clone して opencode を実行します。
+6. Issue comment を取得し、Sandbox を起動し、repository を clone して opencode を実行します。
 7. runner が JSONL 形式の event log と result file を `/workspace/.symphony` にアトミックに書き込みます。
-8. 成功時は workspace を R2 に保存し、Issue が open かつ実行条件を満たす間は次のターンを実行します。
+8. 成功時は workspace を R2 に保存し、処理済みの Issue context fingerprint を記録します。
 9. 失敗時は workspace を保存して Sandbox を破棄し、指数バックオフ後に復元して再試行します。
-10. Issue が closed、必須ラベルが外れた、除外ラベルが付いた、または Issue が削除された場合は job を終了します。
+10. Issue body または actionable comment が変わり、Issue が引き続き routable な場合は次のターンを queue します。
+11. Issue が closed、必須ラベルが外れた、除外ラベルが付いた、または Issue が削除された場合は job を終了します。
 
 ## 後続ターン
 
-Issue が open のままの場合は、ターンが成功した後も次のターンが続けて実行されます。標準構成では agent が GitHub Issue を自動で close しないため、作業完了時の運用を次のいずれかで決めてください。
+ターンが成功すると、job は現在の Issue body と actionable comment を処理済みとして idle になります。Issue context が変わり、Issue が引き続き実行条件を満たす場合だけ、次のターンが実行されます。標準構成では agent が GitHub Issue を自動で close しないため、作業完了時の運用を次のいずれかで決めてください。
 
 - 人または別の automation が Issue を close する。
 - `codex` ラベルを外す。
 - `do-not-run` などの除外ラベルを付ける。
 - GitHub write 権限と workflow policy を与えて、agent または hook が Issue を更新する。
 - `agent.max_turns` を小さくして、上限到達後に operator が確認する。
+
+`tracker.agent_logins` に含まれる login からの comment と Issue body edit は wake signal として無視されます。`[bot]` で終わる GitHub bot account も、自己起動ループを避けるために無視されます。
 
 ## GitHub Issue のルーティング
 
@@ -188,9 +191,10 @@ SSL verification: Enable SSL verification
 購読イベントは、最低限、次を選びます。
 
 - Issues
+- Issue comments
 - Issue dependencies（`use_issue_dependencies: true` の場合）
 
-`Ping` は疎通確認として処理されます。`issue_comment` は標準実装では使用しないため、購読する必要はありません。
+`Ping` は疎通確認として処理されます。Issue comment は orchestrator を wake しますが、Durable Object は filtered issue context fingerprint が変わった場合だけ次のターンを開始します。
 
 Worker は Webhook を検証した後に `202 Accepted` を返し、Durable Object の処理を `waitUntil()` で継続します。未知の event または対象外の action は無視します。
 
