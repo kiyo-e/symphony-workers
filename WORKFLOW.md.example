@@ -27,7 +27,7 @@ tracker:
 repository:
   # clone_url defaults to https://github.com/<tracker.owner>/<tracker.repo>.git
   # clone_url: https://github.com/OWNER/REPOSITORY.git
-  default_branch: main
+  default_branch: develop
   target_dir: /workspace/repo
 
 agent:

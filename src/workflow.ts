@@ -5,6 +5,7 @@ import type { GitHubIssue, LoadedWorkflow, WorkflowConfig } from "./types";
 import { clampInteger } from "./util";
 
 const FRONT_MATTER = /^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/;
+const PLACEHOLDERS = new Set(["OWNER", "REPOSITORY", "YOUR_ORG_OR_USER", "YOUR_REPOSITORY"]);
 let cached: LoadedWorkflow | undefined;
 
 interface RawWorkflow {
@@ -29,6 +30,7 @@ function optionalString(value: unknown): string | undefined {
 function requiredString(value: unknown, name: string): string {
   const result = optionalString(value);
   if (!result) throw new Error(`WORKFLOW.md: ${name} is required`);
+  if (PLACEHOLDERS.has(result)) throw new Error(`WORKFLOW.md: ${name} still contains ${result}`);
   return result;
 }
 

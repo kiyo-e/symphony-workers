@@ -82,19 +82,23 @@ function consumeEventLine(line) {
   if (!line.trim()) return;
   try {
     const event = JSON.parse(line);
-    if (event.type === "thread.started" && typeof event.thread_id === "string") {
-      threadId = event.thread_id;
-    }
-    if (event.type === "item.completed" && event.item?.type === "agent_message") {
-      finalResponse = event.item.text ?? finalResponse;
-    }
-    if (event.type === "turn.completed") usage = event.usage;
+    const sessionId =
+      event.session?.id ??
+      event.sessionID ??
+      event.session_id ??
+      event.sessionId;
+    if (typeof sessionId === "string" && sessionId) threadId = sessionId;
+    if (typeof event.text === "string") finalResponse = event.text;
+    if (typeof event.message === "string") finalResponse = event.message;
+    if (event.type === "message" && typeof event.content === "string") finalResponse = event.content;
+    if (event.type === "session.updated" && event.session?.usage) usage = event.session.usage;
+    if (event.type === "run.completed" && event.usage) usage = event.usage;
   } catch {
     // The complete raw stream remains available for diagnostics.
   }
 }
 
-async function appendCodexEvents(chunk) {
+async function appendAgentEvents(chunk) {
   await appendFile(job.eventsPath, chunk, "utf8");
   eventBuffer += chunk;
   const lines = eventBuffer.split("\n");
@@ -102,17 +106,45 @@ async function appendCodexEvents(chunk) {
   for (const line of lines) consumeEventLine(line);
 }
 
-function queueCodexEvents(chunk) {
-  eventWriteChain = eventWriteChain.then(() => appendCodexEvents(chunk));
-  eventWriteChain.catch((error) => console.error("Codex event write failed", error));
+function queueAgentEvents(chunk) {
+  eventWriteChain = eventWriteChain.then(() => appendAgentEvents(chunk));
+  eventWriteChain.catch((error) => console.error("agent event write failed", error));
 }
 
-function tomlString(value) {
-  return JSON.stringify(String(value));
+function normalizeOpenCodeModel(model, providerId) {
+  if (!model) return undefined;
+  if (model.startsWith(`${providerId}/`)) return model;
+  if (model.startsWith("@cf/")) return `${providerId}/${model}`;
+  return model;
 }
 
-function addCodexConfig(args, key, value) {
-  args.push("-c", `${key}=${tomlString(value)}`);
+function openCodeModelId(model, providerId) {
+  const prefix = `${providerId}/`;
+  return model.startsWith(prefix) ? model.slice(prefix.length) : model;
+}
+
+async function writeOpenCodeConfig(configPath, provider, model) {
+  if (!provider || !model) return;
+  const modelId = openCodeModelId(model, provider.id);
+  await writeFile(
+    configPath,
+    JSON.stringify(
+      {
+        $schema: "https://opencode.ai/config.json",
+        model,
+        provider: {
+          [provider.id]: {
+            models: {
+              [modelId]: { name: modelId },
+            },
+          },
+        },
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
 }
 
 async function atomicResult(result) {
@@ -124,10 +156,12 @@ async function atomicResult(result) {
 async function main() {
   const repoDir = underWorkspace(job.repository.target_dir);
   const stateDir = underWorkspace(path.dirname(job.resultPath));
-  const codexHome = underWorkspace(process.env.CODEX_HOME || "/workspace/.symphony/codex-home");
-  process.env.CODEX_HOME = codexHome;
+  const opencodeConfigPath = path.join(stateDir, "opencode.json");
+  const opencodeConfigDir = underWorkspace(
+    process.env.OPENCODE_CONFIG_DIR || "/workspace/.symphony/opencode-config",
+  );
   await mkdir(stateDir, { recursive: true });
-  await mkdir(codexHome, { recursive: true });
+  await mkdir(opencodeConfigDir, { recursive: true });
   await writeFile(job.eventsPath, "", "utf8");
 
   let created = false;
@@ -146,37 +180,42 @@ async function main() {
   if (created) await runHook("after_create", job.hooks.after_create, repoDir);
   await runHook("before_run", job.hooks.before_run, repoDir);
 
-  const args = [
-    "exec",
-    "--json",
-    "--ignore-user-config",
-    "--dangerously-bypass-approvals-and-sandbox",
-  ];
-  if (job.codexProvider) {
-    const providerKey = `model_providers.${job.codexProvider.id}`;
-    addCodexConfig(args, "model_provider", job.codexProvider.id);
-    addCodexConfig(args, `${providerKey}.name`, job.codexProvider.name);
-    addCodexConfig(args, `${providerKey}.base_url`, job.codexProvider.baseUrl);
-    addCodexConfig(args, `${providerKey}.env_key`, job.codexProvider.envKey);
-    addCodexConfig(args, `${providerKey}.wire_api`, job.codexProvider.wireApi);
-  }
-  if (job.model) args.push("--model", job.model);
-  if (job.reasoningEffort) {
-    addCodexConfig(args, "model_reasoning_effort", job.reasoningEffort);
-  }
-  if (job.threadId) args.push("resume", job.threadId, "-");
-  else args.push("-");
+  const model = normalizeOpenCodeModel(job.model, job.agentProvider?.id ?? "cloudflare-workers-ai");
+  await writeOpenCodeConfig(opencodeConfigPath, job.agentProvider, model);
 
-  const codex = await run("codex", args, {
+  const args = [
+    "run",
+    "--format",
+    "json",
+    "--pure",
+    "--dangerously-skip-permissions",
+    "--dir",
+    repoDir,
+    "--title",
+    job.issue.identifier,
+  ];
+  if (threadId) args.push("--session", threadId);
+  if (model) args.push("--model", model);
+  if (job.reasoningEffort) {
+    args.push("--variant", job.reasoningEffort);
+  }
+  args.push(job.prompt);
+
+  const opencode = await run("opencode", args, {
     cwd: repoDir,
-    stdinText: job.prompt,
-    onStdout: queueCodexEvents,
+    env: {
+      OPENCODE_CONFIG_DIR: opencodeConfigDir,
+      OPENCODE_CONFIG: opencodeConfigPath,
+      CLOUDFLARE_ACCOUNT_ID: process.env.CLOUDFLARE_ACCOUNT_ID,
+      CLOUDFLARE_API_KEY: process.env.CLOUDFLARE_API_KEY,
+    },
+    onStdout: queueAgentEvents,
   });
   await eventWriteChain;
   if (eventBuffer.trim()) consumeEventLine(eventBuffer);
 
-  if (codex.code !== 0) {
-    throw new Error(`codex exited with ${codex.code}: ${codex.stderr || codex.stdout}`);
+  if (opencode.code !== 0) {
+    throw new Error(`opencode exited with ${opencode.code}: ${opencode.stderr || opencode.stdout}`);
   }
 
   await runHook("after_run", job.hooks.after_run, repoDir);
@@ -184,7 +223,7 @@ async function main() {
     ok: true,
     runId: job.runId,
     threadId,
-    finalResponse,
+    finalResponse: finalResponse || opencode.stdout,
     usage,
     completedAt: new Date().toISOString(),
   });

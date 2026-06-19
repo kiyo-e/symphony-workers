@@ -79,12 +79,12 @@ export interface LoadedWorkflow {
 export type JobPhase = "starting" | "running" | "waiting" | "blocked";
 export type WaitKind = "retry" | "continuation";
 
-export interface CodexProviderConfig {
+export interface AgentProviderConfig {
   id: string;
   name: string;
   baseUrl: string;
   envKey: string;
-  wireApi: "chat" | "responses";
+  httpHeaders?: Record<string, string>;
 }
 
 export interface JobRecord {
@@ -139,7 +139,7 @@ export interface RunnerJob {
   prompt: string;
   threadId?: string;
   model?: string;
-  codexProvider?: CodexProviderConfig;
+  agentProvider?: AgentProviderConfig;
   reasoningEffort?: WorkflowConfig["agent"]["reasoning_effort"];
   resultPath: string;
   eventsPath: string;
@@ -160,6 +160,23 @@ export interface WebhookReceipt {
   accepted: boolean;
   duplicate: boolean;
   deliveryId: string;
+}
+
+export interface JobLogsSnapshot {
+  issueId: string;
+  issueNumber: number;
+  identifier: string;
+  phase: JobPhase;
+  waitKind?: WaitKind;
+  sandboxId: string;
+  processId?: string;
+  runId?: string;
+  resultPath?: string;
+  eventsPath?: string;
+  stdout?: string;
+  stderr?: string;
+  events?: string;
+  result?: RunnerResult;
 }
 
 export interface StatusSnapshot {

@@ -7,7 +7,7 @@ export { ProjectOrchestrator } from "./orchestrator";
 
 export class Sandbox extends BaseSandbox<Env> {
   interceptHttps = true;
-  enableInternet = false;
+  enableInternet = true;
   allowedHosts = [
     "api.cloudflare.com",
     "github.com",
@@ -15,6 +15,7 @@ export class Sandbox extends BaseSandbox<Env> {
     "raw.githubusercontent.com",
     "objects.githubusercontent.com",
     "codeload.github.com",
+    "registry.npmjs.org",
   ];
 }
 
@@ -38,8 +39,9 @@ Sandbox.outboundByHost = {
   "api.cloudflare.com": async (request: Request, env: Env): Promise<Response> =>
     proxyRequest(request, "https://api.cloudflare.com", (headers) => {
       headers.set("Authorization", `Bearer ${env.CLOUDFLARE_API_TOKEN}`);
-      headers.set("cf-aig-gateway-id", env.CLOUDFLARE_GATEWAY_ID);
       headers.delete("X-Api-Key");
+      headers.delete("X-Auth-Key");
+      headers.delete("X-Auth-Email");
     }),
 
   "github.com": async (request: Request, env: Env): Promise<Response> =>
@@ -175,6 +177,12 @@ function shouldWakeOrchestrator(event: string, action: string | undefined): bool
   return event === "issues" && typeof action === "string" && RELEVANT_ISSUE_ACTIONS.has(action);
 }
 
+function errorResponse(error: unknown): Response {
+  const message = error instanceof Error ? error.message : String(error);
+  const status = message.startsWith("Unknown issue id:") ? 404 : 409;
+  return Response.json({ ok: false, error: message }, { status });
+}
+
 const app = new Hono<{ Bindings: Env }>();
 
 app.get("/healthz", () => {
@@ -232,12 +240,28 @@ app.get("/status", async (c) => {
   return Response.json(await orchestrator(c.env).status());
 });
 
+app.get("/jobs/:issueNumber/logs", async (c) => {
+  try {
+    return Response.json(await orchestrator(c.env).logs(c.req.param("issueNumber")));
+  } catch (error) {
+    return errorResponse(error);
+  }
+});
+
 app.post("/jobs/:issueNumber/retry", async (c) => {
-  return Response.json(await orchestrator(c.env).retry(c.req.param("issueNumber")));
+  try {
+    return Response.json(await orchestrator(c.env).retry(c.req.param("issueNumber")));
+  } catch (error) {
+    return errorResponse(error);
+  }
 });
 
 app.post("/jobs/:issueNumber/cancel", async (c) => {
-  return Response.json(await orchestrator(c.env).cancel(c.req.param("issueNumber")));
+  try {
+    return Response.json(await orchestrator(c.env).cancel(c.req.param("issueNumber")));
+  } catch (error) {
+    return errorResponse(error);
+  }
 });
 
 app.notFound(() => {
@@ -247,5 +271,8 @@ app.notFound(() => {
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     return app.fetch(request, env, ctx);
+  },
+  async scheduled(controller: ScheduledController, env: Env): Promise<void> {
+    await orchestrator(env).tick(`cron:${controller.cron}`);
   },
 } satisfies ExportedHandler<Env>;

@@ -8,9 +8,10 @@ import {
   sortForDispatch,
 } from "./github";
 import type {
-  CodexProviderConfig,
+  AgentProviderConfig,
   CompletedRecord,
   JobRecord,
+  JobLogsSnapshot,
   OrchestratorState,
   RunnerJob,
   RunnerResult,
@@ -26,9 +27,9 @@ const STATUS_POLL_MS = 10_000;
 const CONTINUATION_DELAY_MS = 1_000;
 const COMPLETED_HISTORY_LIMIT = 50;
 const RECENT_DELIVERY_LIMIT = 100;
-const CODEX_HOME = "/workspace/.symphony/codex-home";
-const CODEX_PROVIDER_ENV_KEY = "CLOUDFLARE_API_TOKEN";
-const DEFAULT_CODEX_MODEL = "@cf/zai-org/glm-5.2";
+const OPENCODE_CONFIG_DIR = "/workspace/.symphony/opencode-config";
+const CLOUDFLARE_WORKERS_AI_ENV_KEY = "CLOUDFLARE_API_KEY";
+const DEFAULT_AGENT_MODEL = "@cf/zai-org/glm-5.2";
 
 function emptyState(): OrchestratorState {
   return { version: 2, jobs: {}, completed: [], recentDeliveries: [] };
@@ -48,17 +49,15 @@ function requiredEnv(value: string | undefined, name: string): string {
   return trimmed;
 }
 
-function codexProviderConfig(env: Env): CodexProviderConfig {
+function agentProviderConfig(env: Env): AgentProviderConfig {
   const accountId = requiredEnv(env.CLOUDFLARE_ACCOUNT_ID, "CLOUDFLARE_ACCOUNT_ID");
-  requiredEnv(env.CLOUDFLARE_GATEWAY_ID, "CLOUDFLARE_GATEWAY_ID");
   requiredEnv(env.CLOUDFLARE_API_TOKEN, "CLOUDFLARE_API_TOKEN");
 
   return {
     id: "cloudflare-workers-ai",
     name: "Cloudflare Workers AI",
     baseUrl: `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`,
-    envKey: CODEX_PROVIDER_ENV_KEY,
-    wireApi: "chat",
+    envKey: CLOUDFLARE_WORKERS_AI_ENV_KEY,
   };
 }
 
@@ -141,7 +140,9 @@ export class ProjectOrchestrator extends DurableObject<Env> {
     const state = await this.loadState();
     const job = state.jobs[issueId];
     if (!job) throw new Error(`Unknown issue id: ${issueId}`);
-    if (job.phase !== "blocked") throw new Error(`Issue ${job.issue.identifier} is not blocked`);
+    if (job.phase !== "blocked" && job.phase !== "waiting") {
+      throw new Error(`Issue ${job.issue.identifier} is ${job.phase} and cannot be retried`);
+    }
 
     job.phase = "waiting";
     job.waitKind = "retry";
@@ -161,6 +162,41 @@ export class ProjectOrchestrator extends DurableObject<Env> {
     await this.finishJob(state, job, "cancelled", loadWorkflow().config, true);
     await this.saveState(state);
     return this.status();
+  }
+
+  async logs(issueId: string): Promise<JobLogsSnapshot> {
+    const state = await this.loadState();
+    const job = state.jobs[issueId];
+    if (!job) throw new Error(`Unknown issue id: ${issueId}`);
+
+    const sandbox = getSandbox(this.env.Sandbox, job.sandboxId, { keepAlive: true });
+    let stdout: string | undefined;
+    let stderr: string | undefined;
+    if (job.processId) {
+      const process = (await sandbox.listProcesses()).find((candidate) => candidate.id === job.processId);
+      if (process) {
+        const logs = await process.getLogs();
+        stdout = truncate(logs.stdout, 100_000);
+        stderr = truncate(logs.stderr, 100_000);
+      }
+    }
+
+    return {
+      issueId: job.issue.id,
+      issueNumber: job.issue.number,
+      identifier: job.issue.identifier,
+      phase: job.phase,
+      waitKind: job.waitKind,
+      sandboxId: job.sandboxId,
+      processId: job.processId,
+      runId: job.runId,
+      resultPath: job.resultPath,
+      eventsPath: job.eventsPath,
+      stdout,
+      stderr,
+      events: await this.readTextFile(sandbox, job.eventsPath, 200_000),
+      result: await this.readRunnerResult(sandbox, job.resultPath),
+    };
   }
 
   private async serializedCycle(reason: string): Promise<void> {
@@ -265,7 +301,7 @@ export class ProjectOrchestrator extends DurableObject<Env> {
           state,
           job,
           config,
-          `Codex turn timed out after ${config.agent.turn_timeout_ms}ms`,
+          `agent turn timed out after ${config.agent.turn_timeout_ms}ms`,
         );
         continue;
       }
@@ -294,7 +330,7 @@ export class ProjectOrchestrator extends DurableObject<Env> {
       } catch {
         // Result-file errors are sufficient if logs are unavailable.
       }
-      const reason = result?.error ?? (processLogs || `Codex process ${process?.status ?? "disappeared"}`);
+      const reason = result?.error ?? (processLogs || `agent process ${process?.status ?? "disappeared"}`);
       await this.handleFailure(state, job, config, reason);
     }
   }
@@ -364,7 +400,7 @@ export class ProjectOrchestrator extends DurableObject<Env> {
     const jobPath = `/workspace/.symphony/${id}.job.json`;
 
     job.runId = id;
-    job.processId = `codex-${id}`;
+    job.processId = `opencode-${id}`;
     job.resultPath = resultPath;
     job.eventsPath = eventsPath;
     job.phase = "starting";
@@ -374,15 +410,16 @@ export class ProjectOrchestrator extends DurableObject<Env> {
     await this.saveState(state);
 
     try {
-      const codexProvider = codexProviderConfig(this.env);
+      const agentProvider = agentProviderConfig(this.env);
       const sandbox = getSandbox(this.env.Sandbox, job.sandboxId, {
         keepAlive: true,
         sleepAfter: config.sandbox.sleep_after,
       });
       await sandbox.setKeepAlive(true);
       await sandbox.setEnvVars({
-        [codexProvider.envKey]: "proxy-injected",
-        CODEX_HOME,
+        [agentProvider.envKey]: "proxy-injected",
+        CLOUDFLARE_ACCOUNT_ID: requiredEnv(this.env.CLOUDFLARE_ACCOUNT_ID, "CLOUDFLARE_ACCOUNT_ID"),
+        OPENCODE_CONFIG_DIR,
       });
 
       if (job.restoreOnStart && job.backup) {
@@ -407,8 +444,8 @@ export class ProjectOrchestrator extends DurableObject<Env> {
         hooks: config.hooks,
         prompt,
         threadId: job.threadId,
-        model: config.agent.model ?? DEFAULT_CODEX_MODEL,
-        codexProvider,
+        model: config.agent.model ?? DEFAULT_AGENT_MODEL,
+        agentProvider,
         reasoningEffort: config.agent.reasoning_effort,
         resultPath,
         eventsPath,
@@ -418,12 +455,16 @@ export class ProjectOrchestrator extends DurableObject<Env> {
         processId: job.processId,
         cwd: "/workspace",
         autoCleanup: false,
-        env: { [codexProvider.envKey]: "proxy-injected", CODEX_HOME },
+        env: {
+          [agentProvider.envKey]: "proxy-injected",
+          CLOUDFLARE_ACCOUNT_ID: requiredEnv(this.env.CLOUDFLARE_ACCOUNT_ID, "CLOUDFLARE_ACCOUNT_ID"),
+          OPENCODE_CONFIG_DIR,
+        },
       });
       job.phase = "running";
       await this.saveState(state);
     } catch (error) {
-      await this.handleFailure(state, job, config, `failed to start Codex: ${errorMessage(error)}`);
+      await this.handleFailure(state, job, config, `failed to start agent: ${errorMessage(error)}`);
     }
   }
 
@@ -559,6 +600,20 @@ export class ProjectOrchestrator extends DurableObject<Env> {
     try {
       const file = await sandbox.readFile(path);
       return JSON.parse(file.content) as RunnerResult;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async readTextFile(
+    sandbox: ReturnType<typeof getSandbox>,
+    path: string | undefined,
+    maxLength: number,
+  ): Promise<string | undefined> {
+    if (!path) return undefined;
+    try {
+      const file = await sandbox.readFile(path);
+      return truncate(file.content, maxLength);
     } catch {
       return undefined;
     }
