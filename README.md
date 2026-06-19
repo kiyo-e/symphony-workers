@@ -1,6 +1,10 @@
-# Symphony on Cloudflare Workers + Sandboxes — GitHub Issues 版
+# Symphony on Cloudflare Workers + Sandboxes - GitHub Issues Edition
 
-`openai/symphony` の中心的な調停モデルを、GitHub Issues、Cloudflare Workers、Durable Objects、Cloudflare Sandboxes で構成したデプロイ可能な MVP です。
+[Japanese README](README.ja.md)
+
+A scaffold for running a [Symphony](https://github.com/openai/symphony)-style GitHub Issues orchestrator on Cloudflare Workers, Durable Objects, and Cloudflare Sandboxes. It uses GitHub Issues as the tracker and automatically runs labeled issues with opencode inside Cloudflare Sandboxes.
+
+This repository is meant to be customized before deployment. Start from the included configuration, then update values such as `WORKFLOW.md`, the Worker name, the R2 bucket, and the target GitHub repository for your environment.
 
 ```mermaid
 flowchart LR
@@ -14,43 +18,55 @@ flowchart LR
   S2 --> R2
 ```
 
-## 実装内容
+## Features
 
-- `POST /webhooks/github` で GitHub Webhook を受信します。
-- 生のリクエスト本文と `X-Hub-Signature-256` を使って HMAC-SHA256 署名を検証します。
-- `X-GitHub-Delivery` を Durable Object に保存して、同じ配信の重複処理を防ぎます。
-- `issues` と `issue_dependencies` の Webhook で調停処理を起動します。
-- Webhook を起点に調停処理を起動し、実行中または待機中の job は Durable Object Alarm で継続確認します。
-- `codex` などの必須ラベル、除外ラベル、担当者、優先度ラベル、`blocked` ラベル、GitHub Issue dependency を使って実行対象を選びます。
-- GitHub REST API の Issue エンドポイントに混在する Pull Request は除外します。
-- Issue ごとに決定的な Cloudflare Sandbox ID を割り当てます。
-- Durable Object が claim、同時実行数、再試行、継続ターン、ブロック状態を所有します。
-- opencode は Sandbox 内のバックグラウンドプロセスとして実行します。
-- `/workspace` を R2 にバックアップし、再試行時に復元します。
-- Cloudflare API token と GitHub トークンは Worker 側に保持し、必要な外向き通信でのみ認証ヘッダーを注入します。
-- `/status`、`/tick`、`/jobs/:issueNumber/retry`、`/jobs/:issueNumber/cancel` を提供します。
+- Filters runnable issues by labels, assignees, priority, and issue dependencies. See [GitHub Issue routing](#github-issue-routing) for details.
+- Starts a Cloudflare Sandbox for each issue and runs opencode as a background process.
+- Backs up `/workspace` to R2 and restores it for retries.
+- Provides `/status`, `/tick`, `/jobs/:issueNumber/retry`, and `/jobs/:issueNumber/cancel`.
 
-## 元の Symphony との差
+## Architecture
 
-この実装は Elixir 版の一行単位の移植ではなく、Cloudflare の実行モデルに合わせた MVP です。
+- Receives GitHub webhooks at `POST /webhooks/github`.
+- Verifies the raw request body with the `X-Hub-Signature-256` HMAC-SHA256 signature.
+- Starts orchestration from `issues` and `issue_dependencies` webhooks, and uses Durable Object Alarms to continue checking running or queued jobs.
+- Excludes Pull Requests returned by the GitHub REST Issues endpoint.
+- Derives the Cloudflare Sandbox ID from the issue number.
+- The Durable Object manages claim state, concurrency, retries, follow-up turns, and blocked state.
 
-- Linear の代わりに、単一 GitHub repository の GitHub Issues を tracker として使います。
-- opencode の非対話 `opencode run --format json` を使います。
-- Phoenix LiveView の代わりに JSON の状態 API を提供します。
-- `WORKFLOW.md` は Worker のデプロイ時に bundle へ組み込まれます。
-- GitHub App の installation token の自動発行は含みません。現在は `GITHUB_TOKEN` に fine-grained PAT または別途発行した短期 token を設定します。
-- Pull Request の自動作成、Issue へのコメント、Issue の自動 close は標準では行いません。
+## Execution Flow
 
-## GitHub Issue のルーティング
+1. A GitHub `issues` or `issue_dependencies` webhook reaches the Worker.
+2. The Worker validates the signature, delivery ID, repository name, event, and action.
+3. The Durable Object fetches the latest issue state from the GitHub REST API.
+4. It evaluates required labels, excluded labels, assignees, blockers, and priority.
+5. If a concurrency slot is available, it claims the issue in Durable Object storage.
+6. It starts a Sandbox, clones the repository, and runs opencode.
+7. The runner atomically writes a JSONL event log and result file to `/workspace/.symphony`.
+8. On success, it saves the workspace to R2 and runs the next turn while the issue is open and still matches the execution rules.
+9. On failure, it saves the workspace, destroys the Sandbox, restores the workspace after exponential backoff, and retries.
+10. If the issue is closed, loses the required label, receives an excluded label, or is deleted, the job is terminated.
 
-既定の `WORKFLOW.md` では、次の条件を満たす open Issue を実行します。
+## Follow-Up Turns
 
-- `codex` ラベルが付いていること。
-- `do-not-run` ラベルが付いていないこと。
-- `blocked` ラベルが付いていないこと。
-- GitHub Issue dependency が設定されている場合は、blocking Issue がすべて closed であること。
+If an issue remains open, another turn runs after a successful turn. The default configuration does not automatically close GitHub Issues, so choose one of these completion policies:
 
-優先度は、次のラベル順で 1〜4 に変換されます。
+- A person or another automation closes the issue.
+- Remove the `codex` label.
+- Add an excluded label such as `do-not-run`.
+- Grant GitHub write permissions and a workflow policy so the agent or hook can update the issue.
+- Keep `agent.max_turns` low and let an operator review jobs that reach the limit.
+
+## GitHub Issue Routing
+
+The default `WORKFLOW.md` runs open issues that match these conditions:
+
+- The issue has the `codex` label.
+- The issue does not have the `do-not-run` label.
+- The issue does not have the `blocked` label.
+- If GitHub Issue dependencies are configured, all blocking issues are closed.
+
+Priority is mapped to values 1 through 4 using these labels:
 
 ```yaml
 priority_labels:
@@ -60,32 +76,42 @@ priority_labels:
   - priority:low
 ```
 
-GitHub Issue dependency を使わない repository では、次のように無効化できます。
+Repositories that do not use GitHub Issue dependencies can disable them:
 
 ```yaml
 use_issue_dependencies: false
 ```
 
-## 前提条件
+## Differences from the Original Symphony
 
-- Cloudflare Workers Containers / Sandboxes を利用できる Cloudflare アカウント
-- Cloudflare Sandboxes を利用できる Workers プラン
-- Workers AI を利用できる Cloudflare API token
-- GitHub repository webhook の secret
-- private repository または高い REST API rate limit が必要な場合は GitHub token
-- workspace backup 用の R2 bucket
+This implementation is not a faithful port of the Elixir version. It is an MVP shaped for Cloudflare's execution model.
 
-## 設定
+- It uses GitHub Issues in a single GitHub repository as the tracker instead of Linear.
+- It uses non-interactive `opencode run --format json`.
+- It provides JSON state APIs instead of Phoenix LiveView.
+- `WORKFLOW.md` is bundled when the Worker is deployed.
+- It does not include automatic GitHub App installation token issuance. Set `GITHUB_TOKEN` to a fine-grained PAT or a separately issued short-lived token.
+- It does not create Pull Requests, comment on issues, or close issues by default.
 
-### 1. `WORKFLOW.md` を作成して編集する
+## Prerequisites
 
-`WORKFLOW.md` は repository ごとのローカル設定として扱い、git には含めません。まず example からコピーします。
+- A Cloudflare account and Workers plan with Cloudflare Workers Containers / Sandboxes enabled
+- A Cloudflare API token that can use Workers AI
+- A GitHub repository webhook secret
+- A GitHub token for private repositories or higher REST API rate limits
+- An R2 bucket for workspace backups
+
+## Worker Setup
+
+### 1. Create and edit `WORKFLOW.md`
+
+`WORKFLOW.md` is treated as per-repository local configuration and is not committed to git. Start by copying the example:
 
 ```bash
 bun run workflow:init
 ```
 
-最低限、次の値を変更します。`OWNER`、`REPOSITORY`、`YOUR_ORG_OR_USER`、`YOUR_REPOSITORY` の placeholder が残っている場合、Worker は起動時に明示的な設定エラーを返します。
+At minimum, change these values. If the `YOUR_ORG_OR_USER` or `YOUR_REPOSITORY` placeholders remain, the Worker returns a configuration error at startup.
 
 ```yaml
 tracker:
@@ -96,13 +122,13 @@ repository:
   default_branch: main
 ```
 
-`repository.clone_url` を省略すると、次の URL が自動的に使われます。
+If `repository.clone_url` is omitted, this URL is used automatically:
 
 ```text
 https://github.com/<tracker.owner>/<tracker.repo>.git
 ```
 
-### 2. 依存関係をインストールする
+### 2. Install dependencies
 
 ```bash
 bun install
@@ -110,15 +136,15 @@ bun run cf-typegen
 bun run typecheck
 ```
 
-### 3. R2 bucket を作成する
+### 3. Create an R2 bucket
 
 ```bash
 bunx wrangler r2 bucket create symphony-workspaces
 ```
 
-bucket 名を変更する場合は、`wrangler.jsonc` の `r2_buckets[].bucket_name` と `BACKUP_BUCKET_NAME` を同じ値へ変更します。
+If you change the bucket name, update `r2_buckets[].bucket_name` in `wrangler.jsonc` and `BACKUP_BUCKET_NAME` to the same value.
 
-### 4. Secrets を登録する
+### 4. Register secrets
 
 ```bash
 bunx wrangler secret put GITHUB_WEBHOOK_SECRET
@@ -126,109 +152,88 @@ bunx wrangler secret put CLOUDFLARE_ACCOUNT_ID
 bunx wrangler secret put CLOUDFLARE_API_TOKEN
 ```
 
-opencode は `cloudflare-workers-ai` provider として起動し、既定では Cloudflare Workers AI の `@cf/zai-org/glm-5.2` を使います。Sandbox 内には `CLOUDFLARE_API_KEY=proxy-injected` だけを渡し、実 token は Worker の outbound proxy が `api.cloudflare.com` 宛ての通信へ注入します。
+opencode runs with the `cloudflare-workers-ai` provider and uses Cloudflare Workers AI `@cf/zai-org/glm-5.2` by default.
 
-private repository または認証済み GitHub API を使う場合は、次も登録します。
+For private repositories or authenticated GitHub API access, also register:
 
 ```bash
 bunx wrangler secret put GITHUB_TOKEN
 ```
 
-通常は、対象 repository の次の read-only 権限だけを持つ fine-grained token を推奨します。
+Use a fine-grained token with only these read-only permissions for the target repository:
 
 - Metadata: Read
 - Contents: Read
 - Issues: Read
 
-agent に push、Pull Request 作成、Issue 更新を許可する場合は、それぞれに必要な write 権限を意図的に追加してください。Sandbox の GitHub 通信には Worker がこの token を注入するため、token の権限がそのまま agent の最大権限になります。
+If the agent needs to push, create Pull Requests, or update issues, explicitly add the required write permissions. The Worker injects this token into GitHub traffic from the Sandbox, so the token's scope is the upper bound of what the agent can do.
 
-### 5. デプロイする
+### 5. Deploy
 
 ```bash
 bun run deploy
 ```
 
-`@cloudflare/sandbox` の package version と Docker image tag は同じ値にそろえてください。この scaffold では両方を `0.12.1` に固定しています。
+Keep the `@cloudflare/sandbox` package version and Docker image tag in sync. This scaffold pins both to `0.12.1`.
 
-## GitHub Webhook を設定する
+## Webhook Registration
 
-Repository の **Settings → Webhooks → Add webhook** で、次の内容を設定します。
+In the repository, open **Settings → Webhooks → Add webhook** and configure:
 
 ```text
 Payload URL: https://YOUR-WORKER.YOUR-SUBDOMAIN.workers.dev/webhooks/github
 Content type: application/json
-Secret: GITHUB_WEBHOOK_SECRET と同じ値
+Secret: Same value as GITHUB_WEBHOOK_SECRET
 SSL verification: Enable SSL verification
 ```
 
-購読イベントは、最低限、次を選びます。
+Select at least these events:
 
 - Issues
-- Issue dependencies（`use_issue_dependencies: true` の場合）
+- Issue dependencies, if `use_issue_dependencies: true`
 
-`Ping` は疎通確認として処理されます。`issue_comment` は標準実装では使用しないため、購読する必要はありません。
+`Ping` is handled as a connectivity check. `issue_comment` is not used by the default implementation, so you do not need to subscribe to it.
 
-Worker は Webhook を検証した後に `202 Accepted` を返し、Durable Object の処理を `waitUntil()` で継続します。未知の event または対象外の action は安全に無視します。
+After verifying the webhook, the Worker returns `202 Accepted` and continues Durable Object work with `waitUntil()`. Unknown events and out-of-scope actions are ignored.
 
-## 管理 API
+## Management API
 
 ```bash
-# Health
+# Use the GitHub Issue number for `:issueNumber`.
+
+# Health check
 curl https://YOUR-WORKER/healthz
 
-# 現在の状態
+# Current state
 curl https://YOUR-WORKER/status
 
-# GitHub API の即時照合
+# Reconcile with the GitHub API immediately
 curl -X POST https://YOUR-WORKER/tick
 
-# job のログと runner result を取得します。GitHub Issue 番号を使います。
+# Fetch job logs and runner result
 curl https://YOUR-WORKER/jobs/123/logs
 
-# blocked job の再試行。GitHub Issue 番号を使います。
+# Retry a blocked job
 curl -X POST https://YOUR-WORKER/jobs/123/retry
 
-# 実行中または待機中の job をキャンセルします。
+# Cancel a running or queued job
 curl -X POST https://YOUR-WORKER/jobs/123/cancel
 ```
 
-## 実行の流れ
+## Security
 
-1. GitHub の `issues` または `issue_dependencies` Webhook が Worker に届きます。
-2. Worker が署名、delivery ID、repository 名、event、action を検証します。
-3. Durable Object が GitHub REST API から最新の Issue 状態を取得します。
-4. 必須ラベル、除外ラベル、担当者、ブロッカー、優先度を評価します。
-5. 同時実行枠があれば、Issue を Durable Object storage で claim します。
-6. Issue 専用 Sandbox を起動し、repository を clone して opencode を実行します。
-7. runner が JSONL event と atomic result file を `/workspace/.symphony` に書き込みます。
-8. 成功時は workspace を R2 に保存し、Issue が open かつ routable の間は継続ターンを実行します。
-9. 失敗時は workspace を保存して Sandbox を破棄し、指数バックオフ後に復元して再試行します。
-10. Issue が closed、必須ラベルが外れた、除外ラベルが付いた、または Issue が削除された場合は job を終了します。
+- Use different values for the GitHub webhook secret and GitHub API token.
+- The webhook secret is only used to verify `X-Hub-Signature-256` against the raw body.
+- The latest 100 `X-GitHub-Delivery` values are stored to prevent reprocessing the same delivery ID. If a webhook is missed, the next reconciliation, triggered by a webhook, `/tick`, or a Durable Object Alarm, converges to the latest state.
+- Outbound traffic from the Sandbox is enabled normally. However, authentication headers for Cloudflare API and GitHub API requests are injected by the Worker's outbound proxy.
+- opencode only receives `CLOUDFLARE_API_KEY=proxy-injected`. The real token is injected by the Worker's outbound proxy for traffic to `api.cloudflare.com`, so it is not left inside the Sandbox or repository.
+- If hooks or the agent use npm, PyPI, Maven, or similar registries, add only the required registry hosts to `Sandbox.allowedHosts`.
+- `WORKFLOW.md` hooks are trusted deployment configuration. Do not generate shell commands from issue bodies.
+- Prompts are passed directly as opencode positional messages, not through a shell.
+- opencode starts with `--dangerously-skip-permissions`. The outer Cloudflare Sandbox provides the isolation boundary.
+- If `GITHUB_TOKEN` has write permissions, the agent inside the Sandbox can use those permissions through GitHub egress. Keep permissions minimal.
 
-## 継続ターンについて
-
-Issue が open のままの場合は、成功した agent turn の後にも継続ターンが実行されます。標準構成では agent が GitHub Issue を自動で close しないため、作業完了時の運用を次のいずれかで決めてください。
-
-- 人または別の automation が Issue を close する。
-- `codex` ラベルを外す。
-- `do-not-run` などの除外ラベルを付ける。
-- GitHub write 権限と明示的な workflow policy を与えて、agent または hook が Issue を更新する。
-- `agent.max_turns` を小さくして、上限到達後に operator が確認する。
-
-## セキュリティ上の注意
-
-- GitHub Webhook の secret と GitHub API token は別の値にしてください。
-- Webhook secret は raw body に対する `X-Hub-Signature-256` の検証だけに使います。
-- `X-GitHub-Delivery` は最近の 100 件を保存し、同じ配信 ID の再処理を防ぎます。Webhook、`/tick`、Durable Object Alarm のいずれかで次の照合が走ると、最新状態へ収束します。
-- Sandbox の一般的な internet access は有効です。Cloudflare API と GitHub API への認証ヘッダーは Worker の outbound proxy が注入します。
-- opencode には `CLOUDFLARE_API_KEY=proxy-injected` だけを渡します。実 token は Worker の outbound proxy が `api.cloudflare.com` 宛ての通信へ注入するため、Sandbox 内や repository には残りません。
-- npm、PyPI、Maven などを hooks または agent が利用する場合は、`Sandbox.allowedHosts` に必要な registry host だけを追加してください。
-- `WORKFLOW.md` の hooks は信頼済みのデプロイ設定です。Issue 本文から shell command を生成しないでください。
-- prompt は shell 経由ではなく、opencode の positional message として直接渡します。
-- opencode は外側の Cloudflare Sandbox を隔離境界として、`--dangerously-skip-permissions` で起動します。
-- `GITHUB_TOKEN` に write 権限を与えると、Sandbox 内の agent もその権限を GitHub egress 経由で利用できます。最小権限を維持してください。
-
-## 検証コマンド
+## Verification Commands
 
 ```bash
 bun run cf-typegen
@@ -237,25 +242,4 @@ bun audit --audit-level=moderate
 bunx wrangler deploy --dry-run --containers-rollout=none
 ```
 
-Docker daemon が利用できる環境では、`--containers-rollout=none` を外して container image の build まで検証してください。
-
-## 本番運用で追加を推奨するもの
-
-GitHub App installation token の短期発行、repository ごとの Durable Object namespace、監査 log export、dead-letter handling、実行 metrics、operator dashboard、Pull Request policy、Issue comment/state mutation、実 Cloudflare account を使った統合テストを追加することを推奨します。
-
-## 参考資料
-
-- GitHub: Validating webhook deliveries  
-  https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries
-- GitHub: Best practices for using webhooks  
-  https://docs.github.com/en/webhooks/using-webhooks/best-practices-for-using-webhooks
-- GitHub REST API: Issues  
-  https://docs.github.com/en/rest/issues/issues
-- GitHub REST API: Issue dependencies  
-  https://docs.github.com/en/rest/issues/issue-dependencies
-- Cloudflare Sandbox SDK: Codex example  
-  https://github.com/cloudflare/sandbox-sdk/tree/main/examples/codex
-- Cloudflare Sandbox SDK: OpenCode example  
-  https://github.com/cloudflare/sandbox-sdk/tree/main/examples/opencode
-- Cloudflare Workers AI: GLM-5.2  
-  https://developers.cloudflare.com/workers-ai/models/glm-5.2/
+If a Docker daemon is available, remove `--containers-rollout=none` to verify the container image build as well.
