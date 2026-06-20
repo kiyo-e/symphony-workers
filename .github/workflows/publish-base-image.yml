@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: "Container image tag to publish, for example 0.2.0"
+        description: "Version tag to publish, for example 0.2.0"
         required: true
         type: string
 
@@ -27,6 +27,35 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Resolve release version
+        id: release
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            raw_version="${{ github.event.release.tag_name }}"
+          else
+            raw_version="${{ inputs.image_tag }}"
+          fi
+          version="${raw_version#v}"
+          package_version="$(node -p "require('./package.json').version")"
+          template_version="$(node -p "require('./templates/cloudflare-worker/package.json').dependencies['symphony-workers']")"
+          template_image_tag="$(sed -n 's#^FROM ghcr.io/kiyo-e/symphony-workers-base:\(.*\)$#\1#p' templates/cloudflare-worker/Dockerfile)"
+
+          if [[ "$version" != "$package_version" ]]; then
+            echo "Release version $version does not match package.json version $package_version" >&2
+            exit 1
+          fi
+          if [[ "$template_version" != "$package_version" ]]; then
+            echo "Template dependency $template_version does not match package.json version $package_version" >&2
+            exit 1
+          fi
+          if [[ "$template_image_tag" != "$package_version" ]]; then
+            echo "Template image tag $template_image_tag does not match package.json version $package_version" >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -40,9 +69,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=semver,pattern={{version}},value=${{ github.event.release.tag_name }},enable=${{ github.event_name == 'release' }}
-            type=semver,pattern={{raw}},value=${{ github.event.release.tag_name }},enable=${{ github.event_name == 'release' }}
-            type=raw,value=${{ inputs.image_tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=${{ steps.release.outputs.version }}
 
       - name: Build and push image
         id: push
