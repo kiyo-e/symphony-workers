@@ -22,7 +22,7 @@ flowchart LR
 
 - `symphony-workers`: `createWorker`、`Sandbox`、`ProjectOrchestrator` を提供する npm package
 - `templates/cloudflare-worker`: 利用者が自分の repository にコピーする薄い app template
-- `Dockerfile`: maintainer が base image を作るための source。GitHub Actions で GitHub Container Registry へ publish します。
+- `Dockerfile`: maintainer が base image を作るための source
 
 利用者 app が所有するものは次です。
 
@@ -116,7 +116,7 @@ FROM ghcr.io/kiyo-e/symphony-workers-base:0.2.0
 
 Cloudflare に deploy される container image は、利用者 app の Dockerfile から build されます。標準の Dockerfile は公開 base image を継承するだけで、project 固有の package や binary が必要な場合はこの Dockerfile に追記します。`symphony-workers` repository を fork する必要はありません。
 
-GitHub Actions は root の `Dockerfile` を project base image として、release 公開時または手動実行時に GitHub Container Registry へ publish します。template から deploy する場合は、Wrangler が利用者 app の Dockerfile を build して container image を upload するため、Docker または Docker-compatible CLI が必要です。
+template から deploy する場合は、Wrangler が利用者 app の Dockerfile を build して container image を upload するため、Docker または Docker-compatible CLI が必要です。
 
 ### 3. `WORKFLOW.md` を編集する
 
@@ -233,7 +233,7 @@ bun run build
 
 root の `Dockerfile` は `cloudflare/sandbox` の上に project base image を作るためのものです。`@cloudflare/sandbox` の package version と upstream base image tag はそろえてください。この release では両方を `0.12.1` に固定しています。
 
-Base image は `.github/workflows/publish-base-image.yml` で次の場所に publish します。
+対応する base image は次です。
 
 ```text
 ghcr.io/kiyo-e/symphony-workers-base:<version>
@@ -261,5 +261,3 @@ bun run build
 bun audit --audit-level=moderate
 bunx wrangler deploy --dry-run --containers-rollout=none
 ```
-
-maintainer が base image を release する場合は、GitHub Actions workflow で image publish も検証してください。

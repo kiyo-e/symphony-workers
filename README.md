@@ -24,7 +24,7 @@ This repository has three deployable surfaces:
 
 - `symphony-workers`: the npm package that provides `createWorker`, `Sandbox`, and `ProjectOrchestrator`.
 - `templates/cloudflare-worker`: the thin app template users copy into their own repository.
-- `Dockerfile`: the maintainer-owned base image source. GitHub Actions publishes it to GitHub Container Registry.
+- `Dockerfile`: the maintainer-owned base image source.
 
 The user app owns environment-specific files:
 
@@ -118,7 +118,7 @@ FROM ghcr.io/kiyo-e/symphony-workers-base:0.2.0
 
 The image deployed to Cloudflare is built from the user app's Dockerfile. The default Dockerfile only inherits from the published base image, and users can add project-specific packages or binaries there without forking this repository.
 
-GitHub Actions publishes the root `Dockerfile` as the project base image to GitHub Container Registry on release publication or manual dispatch. Deploying from the template requires Docker or a Docker-compatible CLI because Wrangler builds the user app's Dockerfile before uploading the container image.
+Deploying from the template requires Docker or a Docker-compatible CLI because Wrangler builds the user app's Dockerfile before uploading the container image.
 
 ### 3. Edit `WORKFLOW.md`
 
@@ -235,7 +235,7 @@ bun run build
 
 The root `Dockerfile` builds the project base image on top of `cloudflare/sandbox`. Keep the `@cloudflare/sandbox` package version and the upstream base image tag in sync; this release pins both to `0.12.1`.
 
-Base images are published by `.github/workflows/publish-base-image.yml` to:
+The matching base image is:
 
 ```text
 ghcr.io/kiyo-e/symphony-workers-base:<version>
@@ -263,5 +263,3 @@ bun run build
 bun audit --audit-level=moderate
 bunx wrangler deploy --dry-run --containers-rollout=none
 ```
-
-For maintainer image releases, publish the base image with the GitHub Actions workflow.
