@@ -62,6 +62,10 @@ function agentProviderConfig(env: Env): AgentProviderConfig {
   };
 }
 
+function shouldReconcileIdleJobs(reason: string): boolean {
+  return reason === "manual" || reason.startsWith("github-webhook:");
+}
+
 export class ProjectOrchestrator extends DurableObject<Env> {
   private cyclePromise?: Promise<void>;
   private webhookQueue: Promise<void> = Promise.resolve();
@@ -216,18 +220,20 @@ export class ProjectOrchestrator extends DurableObject<Env> {
     const config = workflow.config;
     const state = await this.loadState();
     state.lastCycleAt = Date.now();
+    const github = new GitHubClient(this.env.GITHUB_TOKEN, config.tracker);
 
     const cycleErrors: string[] = [];
     try {
-      await this.inspectRunningJobs(state, config);
+      await this.inspectRunningJobs(state, github, config);
     } catch (error) {
       cycleErrors.push(`sandbox reconciliation: ${errorMessage(error)}`);
     }
 
     try {
-      const github = new GitHubClient(this.env.GITHUB_TOKEN, config.tracker);
       await this.reconcileTrackedIssues(state, github, config);
-      await this.reconcileIdleJobs(state, github, config);
+      if (shouldReconcileIdleJobs(reason)) {
+        await this.reconcileIdleJobs(state, github, config);
+      }
       await this.startDueJobs(state, github, workflow, config);
       await this.dispatchCandidates(state, github, workflow, config);
     } catch (error) {
@@ -239,7 +245,7 @@ export class ProjectOrchestrator extends DurableObject<Env> {
       console.error("Symphony orchestration cycle failed", { reason, error: state.lastError });
     }
 
-    await this.scheduleNextAlarm(state, config);
+    await this.scheduleNextAlarm(state);
     await this.saveState(state);
   }
 
@@ -300,7 +306,11 @@ export class ProjectOrchestrator extends DurableObject<Env> {
     }
   }
 
-  private async inspectRunningJobs(state: OrchestratorState, config: WorkflowConfig): Promise<void> {
+  private async inspectRunningJobs(
+    state: OrchestratorState,
+    github: GitHubClient,
+    config: WorkflowConfig,
+  ): Promise<void> {
     for (const job of Object.values(state.jobs)) {
       if (job.phase !== "running" && job.phase !== "starting") continue;
 
@@ -340,6 +350,12 @@ export class ProjectOrchestrator extends DurableObject<Env> {
 
       const result = await this.readRunnerResult(sandbox, job.resultPath);
       if (result?.ok) {
+        job.issue = await github.fetchWithComments(job.issue);
+        const latestFingerprint = contextFingerprint(job.issue, config.tracker.agent_logins);
+        const hasNewContext =
+          Boolean(job.processingContextFingerprint) &&
+          latestFingerprint !== job.processingContextFingerprint;
+
         job.threadId = result.threadId ?? job.threadId;
         job.turn += 1;
         job.attempt = 1;
@@ -347,10 +363,10 @@ export class ProjectOrchestrator extends DurableObject<Env> {
         job.lastUsage = result.usage;
         job.lastError = undefined;
         job.processId = undefined;
-        job.phase = "idle";
-        job.waitKind = undefined;
-        job.nextRunAt = undefined;
-        job.contextFingerprint = job.processingContextFingerprint ?? job.contextFingerprint;
+        job.phase = hasNewContext ? "waiting" : "idle";
+        job.waitKind = hasNewContext ? "continuation" : undefined;
+        job.nextRunAt = hasNewContext ? Date.now() + CONTINUATION_DELAY_MS : undefined;
+        job.contextFingerprint = latestFingerprint;
         job.processingContextFingerprint = undefined;
         job.backup = await this.backupWorkspace(job, config);
         job.restoreOnStart = false;
@@ -668,15 +684,22 @@ export class ProjectOrchestrator extends DurableObject<Env> {
     ).length;
   }
 
-  private async scheduleNextAlarm(state: OrchestratorState, config: WorkflowConfig): Promise<void> {
+  private async scheduleNextAlarm(state: OrchestratorState): Promise<void> {
     const now = Date.now();
-    let delay = config.tracker.poll_interval_ms;
-    if (this.runningCount(state) > 0) delay = Math.min(delay, STATUS_POLL_MS);
+    let delay: number | undefined;
+    if (this.runningCount(state) > 0) delay = STATUS_POLL_MS;
 
     for (const job of Object.values(state.jobs)) {
       if (job.phase === "waiting" && job.nextRunAt) {
-        delay = Math.min(delay, Math.max(1_000, job.nextRunAt - now));
+        const waitDelay = Math.max(1_000, job.nextRunAt - now);
+        delay = delay === undefined ? waitDelay : Math.min(delay, waitDelay);
       }
+    }
+
+    if (delay === undefined) {
+      state.nextAlarmAt = undefined;
+      await this.ctx.storage.deleteAlarm();
+      return;
     }
 
     state.nextAlarmAt = now + Math.max(1_000, delay);

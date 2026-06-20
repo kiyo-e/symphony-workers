@@ -58,6 +58,8 @@ After a successful turn, the job becomes idle with the current issue body and ac
 - Grant GitHub write permissions and a workflow policy so the agent or hook can update the issue.
 - Keep `agent.max_turns` low and let an operator review jobs that reach the limit.
 
+Idle jobs are rechecked by GitHub webhooks or manual `/tick` calls, not by periodic polling.
+
 Comments and issue-body edits from `tracker.agent_logins` are ignored as wake signals. GitHub bot accounts ending in `[bot]` are also ignored to avoid self-triggered loops.
 
 ## GitHub Issue Routing

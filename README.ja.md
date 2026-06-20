@@ -56,6 +56,8 @@ flowchart LR
 - GitHub write 権限と workflow policy を与えて、agent または hook が Issue を更新する。
 - `agent.max_turns` を小さくして、上限到達後に operator が確認する。
 
+Idle job は GitHub Webhook または手動 `/tick` で再評価され、定期 polling では再評価されません。
+
 `tracker.agent_logins` に含まれる login からの comment と Issue body edit は wake signal として無視されます。`[bot]` で終わる GitHub bot account も、自己起動ループを避けるために無視されます。
 
 ## GitHub Issue のルーティング

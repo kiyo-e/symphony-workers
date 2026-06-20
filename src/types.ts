@@ -55,7 +55,6 @@ export interface WorkflowConfig {
     assignee_login?: string;
     agent_logins: string[];
     use_issue_dependencies: boolean;
-    poll_interval_ms: number;
   };
   repository: {
     clone_url: string;

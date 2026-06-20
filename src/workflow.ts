@@ -89,7 +89,6 @@ function parseConfig(raw: RawWorkflow): WorkflowConfig {
       assignee_login: optionalString(tracker.assignee_login),
       agent_logins: strings(tracker.agent_logins),
       use_issue_dependencies: boolean(tracker.use_issue_dependencies, true),
-      poll_interval_ms: clampInteger(tracker.poll_interval_ms, 30_000, 5_000, 3_600_000),
     },
     repository: {
       clone_url:

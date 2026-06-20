@@ -26,7 +26,6 @@ tracker:
   agent_logins:
     - your-codex-bot
   use_issue_dependencies: true
-  poll_interval_ms: 30000
 
 repository:
   # clone_url defaults to https://github.com/<tracker.owner>/<tracker.repo>.git
