@@ -1,0 +1,23 @@
+{
+  "name": "symphony-workers-app",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.3.14",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy --minify",
+    "typecheck": "tsc --noEmit",
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings"
+  },
+  "dependencies": {
+    "symphony-workers": "0.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "25.9.3",
+    "typescript": "6.0.3",
+    "wrangler": "4.102.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

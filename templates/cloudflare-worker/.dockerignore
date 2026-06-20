@@ -1,0 +1,9 @@
+.git
+.wrangler
+dist
+node_modules
+.dev.vars
+*.log
+.DS_Store
+WORKFLOW.md
+

@@ -1,10 +1,10 @@
-# Symphony on Cloudflare Workers + Sandboxes - GitHub Issues Edition
+# Symphony on Cloudflare Workers + Sandboxes
 
 [Japanese README](README.ja.md)
 
-A scaffold for running a [Symphony](https://github.com/openai/symphony)-style GitHub Issues orchestrator on Cloudflare Workers, Durable Objects, and Cloudflare Sandboxes. It uses GitHub Issues as the tracker and automatically runs labeled issues with opencode inside Cloudflare Sandboxes.
+`symphony-workers` is a runtime package and deployment template for running a [Symphony](https://github.com/openai/symphony)-style GitHub Issues orchestrator on Cloudflare Workers, Durable Objects, and Cloudflare Sandboxes. It uses GitHub Issues as the tracker and runs labeled issues with opencode inside isolated Cloudflare Sandboxes.
 
-This repository is meant to be customized before deployment. Start from the included configuration, then update values such as `WORKFLOW.md`, the Worker name, the R2 bucket, and the target GitHub repository for your environment.
+Do not fork this repository just to configure one deployment. User projects should start from `templates/cloudflare-worker`, keep their own `WORKFLOW.md` and `wrangler.jsonc`, and update by bumping the `symphony-workers` package version plus the base image tag.
 
 ```mermaid
 flowchart LR
@@ -18,18 +18,37 @@ flowchart LR
   S2 --> R2
 ```
 
+## Distribution Model
+
+This repository has three deployable surfaces:
+
+- `symphony-workers`: the npm package that provides `createWorker`, `Sandbox`, and `ProjectOrchestrator`.
+- `templates/cloudflare-worker`: the thin app template users copy into their own repository.
+- `Dockerfile`: the maintainer-owned base image source. GitHub Actions publishes it to GitHub Container Registry.
+
+The user app owns environment-specific files:
+
+- `WORKFLOW.md`
+- `wrangler.jsonc`
+- `Dockerfile`
+- secrets and local `.dev.vars`
+- R2 bucket names and Worker names
+
+Most runtime updates should be package and base image version bumps. Template changes are still required if a release changes Durable Object class names, bindings, migrations, or the runner protocol.
+
 ## Features
 
-- Filters runnable issues by labels, assignees, priority, and issue dependencies. See [GitHub Issue routing](#github-issue-routing) for details.
+- Filters runnable issues by labels, assignees, priority, and issue dependencies.
 - Starts a Cloudflare Sandbox for each issue and runs opencode as a background process.
 - Backs up `/workspace` to R2 and restores it for retries.
-- Provides `/status`, `/tick`, `/jobs/:issueNumber/retry`, and `/jobs/:issueNumber/cancel`.
+- Provides `/status`, `/tick`, `/jobs/:issueNumber/logs`, `/jobs/:issueNumber/retry`, and `/jobs/:issueNumber/cancel`.
 
 ## Architecture
 
 - Receives GitHub webhooks at `POST /webhooks/github`.
 - Verifies the raw request body with the `X-Hub-Signature-256` HMAC-SHA256 signature.
-- Starts orchestration from `issues` and `issue_dependencies` webhooks, and uses Durable Object Alarms to continue checking running or queued jobs.
+- Starts orchestration from `issues`, `issue_comment`, and `issue_dependencies` webhooks.
+- Uses Durable Object Alarms to continue checking running or queued jobs.
 - Excludes Pull Requests returned by the GitHub REST Issues endpoint.
 - Derives the Cloudflare Sandbox ID from the issue number.
 - The Durable Object manages claim state, concurrency, retries, follow-up turns, and blocked state.
@@ -62,61 +81,48 @@ Idle jobs are rechecked by GitHub webhooks or manual `/tick` calls, not by perio
 
 Comments and issue-body edits from `tracker.agent_logins` are ignored as wake signals. GitHub bot accounts ending in `[bot]` are also ignored to avoid self-triggered loops.
 
-## GitHub Issue Routing
+## App Setup
 
-The default `WORKFLOW.md` runs open issues that match these conditions:
-
-- The issue has the `codex` label.
-- The issue does not have the `do-not-run` label.
-- The issue does not have the `blocked` label.
-- If GitHub Issue dependencies are configured, all blocking issues are closed.
-
-Priority is mapped to values 1 through 4 using these labels:
-
-```yaml
-priority_labels:
-  - priority:urgent
-  - priority:high
-  - priority:medium
-  - priority:low
-```
-
-Repositories that do not use GitHub Issue dependencies can disable them:
-
-```yaml
-use_issue_dependencies: false
-```
-
-## Differences from the Original Symphony
-
-This implementation is not a faithful port of the Elixir version. It is an MVP shaped for Cloudflare's execution model.
-
-- It uses GitHub Issues in a single GitHub repository as the tracker instead of Linear.
-- It uses non-interactive `opencode run --format json`.
-- It provides JSON state APIs instead of Phoenix LiveView.
-- `WORKFLOW.md` is bundled when the Worker is deployed.
-- It does not include automatic GitHub App installation token issuance. Set `GITHUB_TOKEN` to a fine-grained PAT or a separately issued short-lived token.
-- It does not create Pull Requests, comment on issues, or close issues by default.
-
-## Prerequisites
-
-- A Cloudflare account and Workers plan with Cloudflare Workers Containers / Sandboxes enabled
-- A Cloudflare API token that can use Workers AI
-- A GitHub repository webhook secret
-- A GitHub token for private repositories or higher REST API rate limits
-- An R2 bucket for workspace backups
-
-## Worker Setup
-
-### 1. Create and edit `WORKFLOW.md`
-
-`WORKFLOW.md` is treated as per-repository local configuration and is not committed to git. Start by copying the example:
+### 1. Start from the template
 
 ```bash
-bun run workflow:init
+cp -R templates/cloudflare-worker my-symphony-worker
+cd my-symphony-worker
+bun install
 ```
 
-At minimum, change these values. If the `YOUR_ORG_OR_USER` or `YOUR_REPOSITORY` placeholders remain, the Worker returns a configuration error at startup.
+The template app imports the runtime package and injects its own `WORKFLOW.md`:
+
+```ts
+import workflowText from "../WORKFLOW.md";
+import { createWorker } from "symphony-workers";
+
+export { ContainerProxy, ProjectOrchestrator, Sandbox } from "symphony-workers";
+
+export default createWorker({ workflowText });
+```
+
+### 2. Set the base image
+
+The template includes a Dockerfile based on the published base image for the `symphony-workers` version you are using.
+
+```Dockerfile
+FROM ghcr.io/kiyo-e/symphony-workers-base:0.2.0
+```
+
+`wrangler.jsonc` points at that file:
+
+```jsonc
+"image": "./Dockerfile"
+```
+
+The image deployed to Cloudflare is built from the user app's Dockerfile. The default Dockerfile only inherits from the published base image, and users can add project-specific packages or binaries there without forking this repository.
+
+GitHub Actions publishes the root `Dockerfile` as the project base image to GitHub Container Registry on release publication or manual dispatch. Deploying from the template requires Docker or a Docker-compatible CLI because Wrangler builds the user app's Dockerfile before uploading the container image.
+
+### 3. Edit `WORKFLOW.md`
+
+At minimum, change these values. If placeholders remain, the Worker returns a configuration error at startup.
 
 ```yaml
 tracker:
@@ -133,15 +139,14 @@ If `repository.clone_url` is omitted, this URL is used automatically:
 https://github.com/<tracker.owner>/<tracker.repo>.git
 ```
 
-### 2. Install dependencies
+### 4. Generate binding types
 
 ```bash
-bun install
 bun run cf-typegen
 bun run typecheck
 ```
 
-### 3. Create an R2 bucket
+### 5. Create an R2 bucket
 
 ```bash
 bunx wrangler r2 bucket create symphony-workspaces
@@ -149,7 +154,7 @@ bunx wrangler r2 bucket create symphony-workspaces
 
 If you change the bucket name, update `r2_buckets[].bucket_name` in `wrangler.jsonc` and `BACKUP_BUCKET_NAME` to the same value.
 
-### 4. Register secrets
+### 6. Register secrets
 
 ```bash
 bunx wrangler secret put GITHUB_WEBHOOK_SECRET
@@ -173,17 +178,15 @@ Use a fine-grained token with only these read-only permissions for the target re
 
 If the agent needs to push, create Pull Requests, or update issues, explicitly add the required write permissions. The Worker injects this token into GitHub traffic from the Sandbox, so the token's scope is the upper bound of what the agent can do.
 
-### 5. Deploy
+### 7. Deploy
 
 ```bash
 bun run deploy
 ```
 
-Keep the `@cloudflare/sandbox` package version and Docker image tag in sync. This scaffold pins both to `0.12.1`.
-
 ## Webhook Registration
 
-In the repository, open **Settings → Webhooks → Add webhook** and configure:
+In the repository, open **Settings -> Webhooks -> Add webhook** and configure:
 
 ```text
 Payload URL: https://YOUR-WORKER.YOUR-SUBDOMAIN.workers.dev/webhooks/github
@@ -206,32 +209,44 @@ After verifying the webhook, the Worker returns `202 Accepted` and continues Dur
 
 ```bash
 # Use the GitHub Issue number for `:issueNumber`.
-
-# Health check
 curl https://YOUR-WORKER/healthz
-
-# Current state
 curl https://YOUR-WORKER/status
-
-# Reconcile with the GitHub API immediately
 curl -X POST https://YOUR-WORKER/tick
-
-# Fetch job logs and runner result
 curl https://YOUR-WORKER/jobs/123/logs
-
-# Retry a blocked job
 curl -X POST https://YOUR-WORKER/jobs/123/retry
-
-# Cancel a running or queued job
 curl -X POST https://YOUR-WORKER/jobs/123/cancel
+```
+
+These endpoints are not authenticated by this package. Restrict access at the route, domain, or Cloudflare Access layer if the Worker is exposed publicly.
+
+## Runtime Development
+
+For work on this repository:
+
+```bash
+bun install
+bun run workflow:init
+bun run cf-typegen
+bun run typecheck
+bun run build
+```
+
+`WORKFLOW.md` is ignored in this repository because it is local deployment config. The template keeps `WORKFLOW.md` tracked because each user app owns that file.
+
+The root `Dockerfile` builds the project base image on top of `cloudflare/sandbox`. Keep the `@cloudflare/sandbox` package version and the upstream base image tag in sync; this release pins both to `0.12.1`.
+
+Base images are published by `.github/workflows/publish-base-image.yml` to:
+
+```text
+ghcr.io/kiyo-e/symphony-workers-base:<version>
 ```
 
 ## Security
 
 - Use different values for the GitHub webhook secret and GitHub API token.
 - The webhook secret is only used to verify `X-Hub-Signature-256` against the raw body.
-- The latest 100 `X-GitHub-Delivery` values are stored to prevent reprocessing the same delivery ID. If a webhook is missed, the next reconciliation, triggered by a webhook, `/tick`, or a Durable Object Alarm, converges to the latest state.
-- Outbound traffic from the Sandbox is enabled normally. However, authentication headers for Cloudflare API and GitHub API requests are injected by the Worker's outbound proxy.
+- The latest 100 `X-GitHub-Delivery` values are stored to prevent reprocessing the same delivery ID. If a webhook is missed, the next webhook, `/tick`, or Durable Object Alarm converges to the latest state.
+- Outbound traffic from the Sandbox is enabled normally. Authentication headers for Cloudflare API and GitHub API requests are injected by the Worker's outbound proxy.
 - opencode only receives `CLOUDFLARE_API_KEY=proxy-injected`. The real token is injected by the Worker's outbound proxy for traffic to `api.cloudflare.com`, so it is not left inside the Sandbox or repository.
 - If hooks or the agent use npm, PyPI, Maven, or similar registries, add only the required registry hosts to `Sandbox.allowedHosts`.
 - `WORKFLOW.md` hooks are trusted deployment configuration. Do not generate shell commands from issue bodies.
@@ -244,8 +259,9 @@ curl -X POST https://YOUR-WORKER/jobs/123/cancel
 ```bash
 bun run cf-typegen
 bun run typecheck
+bun run build
 bun audit --audit-level=moderate
 bunx wrangler deploy --dry-run --containers-rollout=none
 ```
 
-If a Docker daemon is available, remove `--containers-rollout=none` to verify the container image build as well.
+For maintainer image releases, publish the base image with the GitHub Actions workflow.

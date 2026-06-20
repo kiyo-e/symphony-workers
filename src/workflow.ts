@@ -1,11 +1,11 @@
 import { Liquid } from "liquidjs";
 import YAML from "yaml";
-import workflowText from "../WORKFLOW.md";
 import type { GitHubIssue, LoadedWorkflow, WorkflowConfig } from "./types";
 import { clampInteger } from "./util";
 
 const FRONT_MATTER = /^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/;
 const PLACEHOLDERS = new Set(["OWNER", "REPOSITORY", "YOUR_ORG_OR_USER", "YOUR_REPOSITORY"]);
+let configuredWorkflowText: string | undefined;
 let cached: LoadedWorkflow | undefined;
 
 interface RawWorkflow {
@@ -125,10 +125,19 @@ function parseConfig(raw: RawWorkflow): WorkflowConfig {
   };
 }
 
+export function configureWorkflow(workflowText: string): void {
+  configuredWorkflowText = workflowText;
+  cached = undefined;
+}
+
 export function loadWorkflow(): LoadedWorkflow {
   if (cached) return cached;
 
-  const match = workflowText.match(FRONT_MATTER);
+  if (!configuredWorkflowText) {
+    throw new Error("WORKFLOW.md is not configured");
+  }
+
+  const match = configuredWorkflowText.match(FRONT_MATTER);
   if (!match) throw new Error("WORKFLOW.md must contain YAML front matter between --- markers");
 
   const raw = (YAML.parse(match[1]) ?? {}) as RawWorkflow;

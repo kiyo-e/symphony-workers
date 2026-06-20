@@ -11,6 +11,7 @@
         "yaml": "2.9.0",
       },
       "devDependencies": {
+        "@cloudflare/workers-types": "4.20260619.1",
         "@types/node": "25.9.3",
         "typescript": "6.0.3",
         "wrangler": "4.102.0",

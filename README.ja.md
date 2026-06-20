@@ -1,8 +1,8 @@
-# Symphony on Cloudflare Workers + Sandboxes — GitHub Issues 版
+# Symphony on Cloudflare Workers + Sandboxes
 
-Cloudflare Workers、Durable Objects、Cloudflare Sandboxes 上で [Symphony](https://github.com/openai/symphony) 風の GitHub Issues orchestrator を動かすための scaffold です。GitHub Issues を tracker として、ラベルが付いた Issue を Cloudflare Sandbox 上で opencode に自動実行させます。
+`symphony-workers` は、Cloudflare Workers、Durable Objects、Cloudflare Sandboxes 上で [Symphony](https://github.com/openai/symphony) 風の GitHub Issues orchestrator を動かすための runtime package と deployment template です。GitHub Issues を tracker として、ラベルが付いた Issue を Cloudflare Sandbox 内の opencode に実行させます。
 
-この repository は、デプロイ前に各環境向けにカスタマイズする前提です。含まれている設定を出発点として、`WORKFLOW.md`、Worker 名、R2 bucket、対象 GitHub repository などを変更して使います。
+1 つの環境を設定するために、この repository を fork して直接編集する必要はありません。利用者側の project は `templates/cloudflare-worker` から始め、独自の `WORKFLOW.md` と `wrangler.jsonc` を持ち、更新時は `symphony-workers` package version と base image tag を上げる形にします。
 
 ```mermaid
 flowchart LR
@@ -16,18 +16,37 @@ flowchart LR
   S2 --> R2
 ```
 
+## 配布モデル
+
+この repository は 3 つの面を持ちます。
+
+- `symphony-workers`: `createWorker`、`Sandbox`、`ProjectOrchestrator` を提供する npm package
+- `templates/cloudflare-worker`: 利用者が自分の repository にコピーする薄い app template
+- `Dockerfile`: maintainer が base image を作るための source。GitHub Actions で GitHub Container Registry へ publish します。
+
+利用者 app が所有するものは次です。
+
+- `WORKFLOW.md`
+- `wrangler.jsonc`
+- `Dockerfile`
+- secrets と local `.dev.vars`
+- R2 bucket 名、Worker 名
+
+通常の runtime 更新は package と base image tag の version bump で済ませます。ただし Durable Object class 名、bindings、migrations、runner protocol が変わる release では template 側の変更も必要です。
+
 ## Features
 
-- ラベル、担当者、優先度、Issue dependency で実行対象を絞り込みます。詳細は [GitHub Issue のルーティング](#github-issue-のルーティング) を参照してください。
+- ラベル、担当者、優先度、Issue dependency で実行対象を絞り込みます。
 - Issue ごとに Cloudflare Sandbox を起動し、opencode をバックグラウンドプロセスとして実行します。
 - `/workspace` を R2 にバックアップし、再試行時に復元します。
-- `/status`、`/tick`、`/jobs/:issueNumber/retry`、`/jobs/:issueNumber/cancel` を提供します。
+- `/status`、`/tick`、`/jobs/:issueNumber/logs`、`/jobs/:issueNumber/retry`、`/jobs/:issueNumber/cancel` を提供します。
 
 ## アーキテクチャ
 
 - `POST /webhooks/github` で GitHub Webhook を受信します。
 - 生のリクエスト本文と `X-Hub-Signature-256` を使って HMAC-SHA256 署名を検証します。
-- `issues` と `issue_dependencies` の Webhook で調停処理を起動し、実行中または待機中の job は Durable Object Alarm で継続確認します。
+- `issues`、`issue_comment`、`issue_dependencies` の Webhook で調停処理を起動します。
+- 実行中または待機中の job は Durable Object Alarm で継続確認します。
 - GitHub REST API の Issue エンドポイントに混在する Pull Request は除外します。
 - Issue 番号から Cloudflare Sandbox ID を導出します。
 - Durable Object が claim 状態、同時実行数、再試行、後続ターン、ブロック状態を管理します。
@@ -60,61 +79,48 @@ Idle job は GitHub Webhook または手動 `/tick` で再評価され、定期 
 
 `tracker.agent_logins` に含まれる login からの comment と Issue body edit は wake signal として無視されます。`[bot]` で終わる GitHub bot account も、自己起動ループを避けるために無視されます。
 
-## GitHub Issue のルーティング
+## App セットアップ
 
-既定の `WORKFLOW.md` では、次の条件を満たす open Issue を実行します。
-
-- `codex` ラベルが付いていること。
-- `do-not-run` ラベルが付いていないこと。
-- `blocked` ラベルが付いていないこと。
-- GitHub Issue dependency が設定されている場合は、blocking Issue がすべて closed であること。
-
-優先度は、次のラベル順で 1〜4 に変換されます。
-
-```yaml
-priority_labels:
-  - priority:urgent
-  - priority:high
-  - priority:medium
-  - priority:low
-```
-
-GitHub Issue dependency を使わない repository では、次のように無効化できます。
-
-```yaml
-use_issue_dependencies: false
-```
-
-## 元の Symphony との違い
-
-この実装は Elixir 版を忠実に移植したものではなく、Cloudflare の実行モデルに合わせた MVP です。
-
-- Linear の代わりに、単一 GitHub repository の GitHub Issues を tracker として使います。
-- opencode の非対話 `opencode run --format json` を使います。
-- Phoenix LiveView の代わりに JSON の状態 API を提供します。
-- `WORKFLOW.md` は Worker のデプロイ時に bundle へ組み込まれます。
-- GitHub App の installation token の自動発行は含みません。現在は `GITHUB_TOKEN` に fine-grained PAT または別途発行した短期 token を設定します。
-- Pull Request の自動作成、Issue へのコメント、Issue の自動 close は標準では行いません。
-
-## 前提条件
-
-- Cloudflare Workers Containers / Sandboxes が利用可能な Cloudflare アカウントと Workers プラン
-- Workers AI を利用できる Cloudflare API token
-- GitHub repository の webhook secret
-- private repository または高い REST API rate limit が必要な場合は GitHub token
-- workspace backup 用の R2 bucket
-
-## Worker のセットアップ
-
-### 1. `WORKFLOW.md` を作成して編集する
-
-`WORKFLOW.md` は repository ごとのローカル設定として扱い、git には含めません。まず example からコピーします。
+### 1. Template から始める
 
 ```bash
-bun run workflow:init
+cp -R templates/cloudflare-worker my-symphony-worker
+cd my-symphony-worker
+bun install
 ```
 
-最低限、次の値は変更してください。`YOUR_ORG_OR_USER`、`YOUR_REPOSITORY` の placeholder が残っている場合、Worker は起動時に設定エラーを返します。
+template app は runtime package を import し、自分の `WORKFLOW.md` を注入します。
+
+```ts
+import workflowText from "../WORKFLOW.md";
+import { createWorker } from "symphony-workers";
+
+export { ContainerProxy, ProjectOrchestrator, Sandbox } from "symphony-workers";
+
+export default createWorker({ workflowText });
+```
+
+### 2. Base image を設定する
+
+template には、利用する `symphony-workers` version に対応した公開 base image を `FROM` に持つ Dockerfile が含まれます。
+
+```Dockerfile
+FROM ghcr.io/kiyo-e/symphony-workers-base:0.2.0
+```
+
+`wrangler.jsonc` はこの file を指します。
+
+```jsonc
+"image": "./Dockerfile"
+```
+
+Cloudflare に deploy される container image は、利用者 app の Dockerfile から build されます。標準の Dockerfile は公開 base image を継承するだけで、project 固有の package や binary が必要な場合はこの Dockerfile に追記します。`symphony-workers` repository を fork する必要はありません。
+
+GitHub Actions は root の `Dockerfile` を project base image として、release 公開時または手動実行時に GitHub Container Registry へ publish します。template から deploy する場合は、Wrangler が利用者 app の Dockerfile を build して container image を upload するため、Docker または Docker-compatible CLI が必要です。
+
+### 3. `WORKFLOW.md` を編集する
+
+最低限、次の値は変更してください。placeholder が残っている場合、Worker は起動時に設定エラーを返します。
 
 ```yaml
 tracker:
@@ -131,15 +137,14 @@ repository:
 https://github.com/<tracker.owner>/<tracker.repo>.git
 ```
 
-### 2. 依存関係をインストールする
+### 4. Binding types を生成する
 
 ```bash
-bun install
 bun run cf-typegen
 bun run typecheck
 ```
 
-### 3. R2 bucket を作成する
+### 5. R2 bucket を作成する
 
 ```bash
 bunx wrangler r2 bucket create symphony-workspaces
@@ -147,7 +152,7 @@ bunx wrangler r2 bucket create symphony-workspaces
 
 bucket 名を変更する場合は、`wrangler.jsonc` の `r2_buckets[].bucket_name` と `BACKUP_BUCKET_NAME` を同じ値へ変更します。
 
-### 4. Secrets を登録する
+### 6. Secrets を登録する
 
 ```bash
 bunx wrangler secret put GITHUB_WEBHOOK_SECRET
@@ -171,17 +176,15 @@ bunx wrangler secret put GITHUB_TOKEN
 
 agent に push、Pull Request 作成、Issue 更新を許可する場合は、それぞれに必要な write 権限を意図的に追加してください。Sandbox の GitHub 通信には Worker がこの token を注入するため、token の権限がそのまま agent の最大権限になります。
 
-### 5. デプロイする
+### 7. デプロイする
 
 ```bash
 bun run deploy
 ```
 
-`@cloudflare/sandbox` の package version と Docker image tag は同じ値にそろえてください。この scaffold では両方を `0.12.1` に固定しています。
-
 ## Webhook の登録
 
-Repository の **Settings → Webhooks → Add webhook** で、次の内容を設定します。
+Repository の **Settings -> Webhooks -> Add webhook** で、次の内容を設定します。
 
 ```text
 Payload URL: https://YOUR-WORKER.YOUR-SUBDOMAIN.workers.dev/webhooks/github
@@ -204,24 +207,36 @@ Worker は Webhook を検証した後に `202 Accepted` を返し、Durable Obje
 
 ```bash
 # `:issueNumber` には GitHub Issue 番号を指定します。
-
-# ヘルスチェック
 curl https://YOUR-WORKER/healthz
-
-# 現在の状態
 curl https://YOUR-WORKER/status
-
-# GitHub API を即時照合
 curl -X POST https://YOUR-WORKER/tick
-
-# job のログと runner result を取得
 curl https://YOUR-WORKER/jobs/123/logs
-
-# blocked job を再試行
 curl -X POST https://YOUR-WORKER/jobs/123/retry
-
-# 実行中または待機中の job をキャンセル
 curl -X POST https://YOUR-WORKER/jobs/123/cancel
+```
+
+これらの endpoint は package 内では認証していません。Worker を公開する場合は route、domain、または Cloudflare Access layer で access を制限してください。
+
+## Runtime 開発
+
+この repository 自体を開発する場合:
+
+```bash
+bun install
+bun run workflow:init
+bun run cf-typegen
+bun run typecheck
+bun run build
+```
+
+この repository の `WORKFLOW.md` は local deployment config なので git ignore されています。template 側の `WORKFLOW.md` は利用者 app が所有する tracked file です。
+
+root の `Dockerfile` は `cloudflare/sandbox` の上に project base image を作るためのものです。`@cloudflare/sandbox` の package version と upstream base image tag はそろえてください。この release では両方を `0.12.1` に固定しています。
+
+Base image は `.github/workflows/publish-base-image.yml` で次の場所に publish します。
+
+```text
+ghcr.io/kiyo-e/symphony-workers-base:<version>
 ```
 
 ## セキュリティ
@@ -242,8 +257,9 @@ curl -X POST https://YOUR-WORKER/jobs/123/cancel
 ```bash
 bun run cf-typegen
 bun run typecheck
+bun run build
 bun audit --audit-level=moderate
 bunx wrangler deploy --dry-run --containers-rollout=none
 ```
 
-Docker daemon が利用できる環境では、`--containers-rollout=none` を外して container image の build まで検証してください。
+maintainer が base image を release する場合は、GitHub Actions workflow で image publish も検証してください。
