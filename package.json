@@ -1,10 +1,13 @@
 {
   "name": "symphony-workers",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": false,
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "symphony-workers": "./bin/symphony-workers.mjs"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -13,8 +16,10 @@
     }
   },
   "files": [
+    "bin",
     "dist",
     "!dist/entry.*",
+    "templates/cloudflare-worker",
     "NOTICE.md",
     "README.md",
     "README.ja.md"

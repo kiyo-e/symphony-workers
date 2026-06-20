@@ -17,7 +17,7 @@ bun run cf-typegen
 bun run typecheck
 ```
 
-The included `Dockerfile` uses the published base image for the `symphony-workers` version in `package.json`. That npm package version and the base image tag must both exist before this template can be deployed from a fresh project.
+The included `Dockerfile` uses the published base image. That base image tag must exist before this template can be deployed from a fresh project.
 
 ```Dockerfile
 FROM ghcr.io/kiyo-e/symphony-workers-base:0.2.0
