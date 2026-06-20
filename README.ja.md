@@ -89,6 +89,8 @@ cd my-symphony-worker
 bun install
 ```
 
+生成された `wrangler.jsonc` では、create 先の directory 名が Cloudflare Worker 名になります。
+
 template app は runtime package を import し、自分の `WORKFLOW.md` を注入します。
 
 ```ts

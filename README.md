@@ -91,6 +91,8 @@ cd my-symphony-worker
 bun install
 ```
 
+The generated `wrangler.jsonc` uses the target directory name as the Cloudflare Worker name.
+
 The template app imports the runtime package and injects its own `WORKFLOW.md`:
 
 ```ts

@@ -40,6 +40,8 @@ async function ensureWritableTarget(target) {
 }
 
 async function finalizeTemplate(target) {
+  const appName = path.basename(target);
+
   const gitignorePath = path.join(target, "gitignore");
   try {
     await writeFile(path.join(target, ".gitignore"), await readFile(gitignorePath, "utf8"));
@@ -52,6 +54,17 @@ async function finalizeTemplate(target) {
   const appPackage = JSON.parse(await readFile(appPackagePath, "utf8"));
   appPackage.dependencies["symphony-workers"] = packageJson.version;
   await writeFile(appPackagePath, `${JSON.stringify(appPackage, null, 2)}\n`);
+
+  const wranglerConfigPath = path.join(target, "wrangler.jsonc");
+  const wranglerConfig = await readFile(wranglerConfigPath, "utf8");
+  const nextWranglerConfig = wranglerConfig.replace(
+    /^  "name": ".*",$/m,
+    `  "name": ${JSON.stringify(appName)},`,
+  );
+  if (nextWranglerConfig === wranglerConfig) {
+    throw new Error("Could not update wrangler.jsonc name");
+  }
+  await writeFile(wranglerConfigPath, nextWranglerConfig);
 }
 
 async function main() {
