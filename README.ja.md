@@ -84,7 +84,7 @@ Idle job は GitHub Webhook または手動 `/tick` で再評価され、定期 
 ### 1. Template から始める
 
 ```bash
-cp -R templates/cloudflare-worker my-symphony-worker
+npx symphony-workers create my-symphony-worker
 cd my-symphony-worker
 bun install
 ```
@@ -102,7 +102,7 @@ export default createWorker({ workflowText });
 
 ### 2. Base image を設定する
 
-template には、利用する `symphony-workers` version に対応した公開 base image を `FROM` に持つ Dockerfile が含まれます。
+template には公開 base image を `FROM` に持つ Dockerfile が含まれます。base image tag は runner image が変わるときだけ更新します。
 
 ```Dockerfile
 FROM ghcr.io/kiyo-e/symphony-workers-base:0.2.0

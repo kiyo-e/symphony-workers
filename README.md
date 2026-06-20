@@ -86,7 +86,7 @@ Comments and issue-body edits from `tracker.agent_logins` are ignored as wake si
 ### 1. Start from the template
 
 ```bash
-cp -R templates/cloudflare-worker my-symphony-worker
+npx symphony-workers create my-symphony-worker
 cd my-symphony-worker
 bun install
 ```
@@ -104,7 +104,7 @@ export default createWorker({ workflowText });
 
 ### 2. Set the base image
 
-The template includes a Dockerfile based on the published base image for the `symphony-workers` version you are using.
+The template includes a Dockerfile based on the published base image. The base image tag changes only when the runner image changes.
 
 ```Dockerfile
 FROM ghcr.io/kiyo-e/symphony-workers-base:0.2.0

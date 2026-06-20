@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: "Version tag to publish, for example 0.2.0"
+        description: "Image tag to publish, for example 0.2.0"
         required: true
         type: string
 
@@ -37,26 +37,24 @@ jobs:
             raw_version="${{ inputs.image_tag }}"
           fi
           version="${raw_version#v}"
-          package_version="$(node -p "require('./package.json').version")"
-          template_version="$(node -p "require('./templates/cloudflare-worker/package.json').dependencies['symphony-workers']")"
           template_image_tag="$(sed -n 's#^FROM ghcr.io/kiyo-e/symphony-workers-base:\(.*\)$#\1#p' templates/cloudflare-worker/Dockerfile)"
 
-          if [[ "$version" != "$package_version" ]]; then
-            echo "Release version $version does not match package.json version $package_version" >&2
+          if [[ -z "$template_image_tag" ]]; then
+            echo "Could not read the template base image tag" >&2
             exit 1
           fi
-          if [[ "$template_version" != "$package_version" ]]; then
-            echo "Template dependency $template_version does not match package.json version $package_version" >&2
-            exit 1
-          fi
-          if [[ "$template_image_tag" != "$package_version" ]]; then
-            echo "Template image tag $template_image_tag does not match package.json version $package_version" >&2
-            exit 1
+          if [[ "$template_image_tag" != "$version" ]]; then
+            echo "Template image tag is $template_image_tag, not $version. Skipping image publish."
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "should_publish=true" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GitHub Container Registry
+        if: steps.release.outputs.should_publish == 'true'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -64,6 +62,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract image metadata
+        if: steps.release.outputs.should_publish == 'true'
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -72,6 +71,7 @@ jobs:
             type=raw,value=${{ steps.release.outputs.version }}
 
       - name: Build and push image
+        if: steps.release.outputs.should_publish == 'true'
         id: push
         uses: docker/build-push-action@v6
         with:
@@ -83,6 +83,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
 
       - name: Generate artifact attestation
+        if: steps.release.outputs.should_publish == 'true'
         uses: actions/attest@v4
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
