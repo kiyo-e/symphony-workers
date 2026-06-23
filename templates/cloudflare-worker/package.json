@@ -10,7 +10,7 @@
     "cf-typegen": "wrangler types --env-interface CloudflareBindings"
   },
   "dependencies": {
-    "symphony-workers": "0.2.3"
+    "symphony-workers": "0.2.4"
   },
   "devDependencies": {
     "@types/node": "25.9.3",

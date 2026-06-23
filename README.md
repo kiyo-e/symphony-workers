@@ -106,10 +106,10 @@ export default createWorker({ workflowText });
 
 ### 2. Set the base image
 
-The template includes a Dockerfile based on the published base image. The base image tag changes only when the runner image changes.
+The template includes a Dockerfile based on the published base image. Keep the base image tag aligned with the package version.
 
 ```Dockerfile
-FROM ghcr.io/kiyo-e/symphony-workers-base:0.2.3
+FROM ghcr.io/kiyo-e/symphony-workers-base:0.2.4
 ```
 
 `wrangler.jsonc` points at that file:
@@ -254,10 +254,11 @@ ghcr.io/kiyo-e/symphony-workers-base:<version>
 - Use different values for the GitHub webhook secret and GitHub API token.
 - The webhook secret is only used to verify `X-Hub-Signature-256` against the raw body.
 - The latest 100 `X-GitHub-Delivery` values are stored to prevent reprocessing the same delivery ID. If a webhook is missed, the next webhook, `/tick`, or Durable Object Alarm converges to the latest state.
-- Outbound traffic from the Sandbox is enabled normally. Authentication headers for Cloudflare API and GitHub API requests are injected by the Worker's outbound proxy.
+- Outbound traffic from the Sandbox is enabled normally. The runtime does not keep a global package-registry allowlist.
+- Authentication headers for Cloudflare API and GitHub API requests are injected by the Worker's outbound proxy.
 - opencode only receives `CLOUDFLARE_API_KEY=proxy-injected`. The real token is injected by the Worker's outbound proxy for traffic to `api.cloudflare.com`, so it is not left inside the Sandbox or repository.
 - Worker secrets named with `SANDBOX_ENV_` are forwarded to the Sandbox with that prefix removed. For example, `SANDBOX_ENV_RAILS_MASTER_KEY` becomes `RAILS_MASTER_KEY`. Do not put these values in `wrangler.jsonc`, `.dev.vars`, or `WORKFLOW.md`.
-- If hooks or the agent use npm, PyPI, Maven, or similar registries, add only the required registry hosts to `Sandbox.allowedHosts`.
+- If a deployment needs deny-by-default egress, define a custom `Sandbox` class in the app template and set `allowedHosts` or `deniedHosts` there. The app template README includes a copyable example.
 - `WORKFLOW.md` hooks are trusted deployment configuration. Do not generate shell commands from issue bodies.
 - Prompts are passed directly as opencode positional messages, not through a shell.
 - opencode starts with `--dangerously-skip-permissions`. The outer Cloudflare Sandbox provides the isolation boundary.
