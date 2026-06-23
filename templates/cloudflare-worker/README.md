@@ -27,7 +27,18 @@ FROM ghcr.io/kiyo-e/symphony-workers-base:0.2.4
 
 `wrangler.jsonc` points at `./Dockerfile`, so the container deployed to Cloudflare is built from this file. Add project-specific packages or binaries here instead of forking `symphony-workers`.
 
-Sandbox internet egress is open by default. To enforce a deny-by-default policy for one deployment, define a local `Sandbox` class in `src/index.ts` and set `allowedHosts` or `deniedHosts` there.
+Sandbox internet egress is open by default. Keep the generated `src/index.ts` unchanged for that mode:
+
+```ts
+import workflowText from "../WORKFLOW.md";
+import { createWorker } from "symphony-workers";
+
+export { ContainerProxy, ProjectOrchestrator, Sandbox } from "symphony-workers";
+
+export default createWorker({ workflowText });
+```
+
+To enforce a deny-by-default policy for one deployment, replace the whole `src/index.ts` file with a local `Sandbox` class. Do not also re-export `Sandbox` from `symphony-workers`, because the local class must own that export name.
 
 ```ts
 import workflowText from "../WORKFLOW.md";
@@ -54,4 +65,4 @@ export class Sandbox extends SymphonySandbox {
 export default createWorker({ workflowText });
 ```
 
-When `allowedHosts` is set, every external host needed by hooks or agent commands must be listed here.
+When `allowedHosts` is set, every external host needed by hooks or agent commands must be listed here. An empty `allowedHosts` list denies all external hosts. Omit `allowedHosts` to keep open internet egress.
