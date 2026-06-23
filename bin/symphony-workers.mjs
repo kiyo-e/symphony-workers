@@ -31,6 +31,14 @@ function targetFromArgs() {
   return commandOrTarget;
 }
 
+function validateWorkerName(name) {
+  if (!/^(?=.{1,255}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(name)) {
+    throw new Error(
+      `Invalid Worker name: ${name}. Use only letters, numbers, and dashes; start and end with a letter or number.`,
+    );
+  }
+}
+
 async function ensureWritableTarget(target) {
   await mkdir(target, { recursive: true });
   const entries = await readdir(target);
@@ -40,6 +48,9 @@ async function ensureWritableTarget(target) {
 }
 
 async function finalizeTemplate(target) {
+  const appName = path.basename(target);
+  validateWorkerName(appName);
+
   const gitignorePath = path.join(target, "gitignore");
   try {
     await writeFile(path.join(target, ".gitignore"), await readFile(gitignorePath, "utf8"));
@@ -52,6 +63,17 @@ async function finalizeTemplate(target) {
   const appPackage = JSON.parse(await readFile(appPackagePath, "utf8"));
   appPackage.dependencies["symphony-workers"] = packageJson.version;
   await writeFile(appPackagePath, `${JSON.stringify(appPackage, null, 2)}\n`);
+
+  const wranglerConfigPath = path.join(target, "wrangler.jsonc");
+  const wranglerConfig = await readFile(wranglerConfigPath, "utf8");
+  const nextWranglerConfig = wranglerConfig.replace(
+    /^  "name": ".*",$/m,
+    `  "name": ${JSON.stringify(appName)},`,
+  );
+  if (nextWranglerConfig === wranglerConfig) {
+    throw new Error("Could not update wrangler.jsonc name");
+  }
+  await writeFile(wranglerConfigPath, nextWranglerConfig);
 }
 
 async function main() {
@@ -63,6 +85,7 @@ async function main() {
   }
 
   const target = path.resolve(process.cwd(), targetArg);
+  validateWorkerName(path.basename(target));
   await ensureWritableTarget(target);
   await cp(templateDir, target, { recursive: true });
   await finalizeTemplate(target);

@@ -17,10 +17,12 @@ bun run cf-typegen
 bun run typecheck
 ```
 
+When this template is created with `npx symphony-workers create <directory>`, `wrangler.jsonc` uses that directory name as the Cloudflare Worker name.
+
 The included `Dockerfile` uses the published base image. That base image tag must exist before this template can be deployed from a fresh project.
 
 ```Dockerfile
-FROM ghcr.io/kiyo-e/symphony-workers-base:0.2.0
+FROM ghcr.io/kiyo-e/symphony-workers-base:0.2.2
 ```
 
 `wrangler.jsonc` points at `./Dockerfile`, so the container deployed to Cloudflare is built from this file. Add project-specific packages or binaries here instead of forking `symphony-workers`.

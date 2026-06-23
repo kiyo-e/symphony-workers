@@ -91,6 +91,8 @@ cd my-symphony-worker
 bun install
 ```
 
+The generated `wrangler.jsonc` uses the target directory name as the Cloudflare Worker name.
+
 The template app imports the runtime package and injects its own `WORKFLOW.md`:
 
 ```ts
@@ -107,7 +109,7 @@ export default createWorker({ workflowText });
 The template includes a Dockerfile based on the published base image. The base image tag changes only when the runner image changes.
 
 ```Dockerfile
-FROM ghcr.io/kiyo-e/symphony-workers-base:0.2.0
+FROM ghcr.io/kiyo-e/symphony-workers-base:0.2.2
 ```
 
 `wrangler.jsonc` points at that file:

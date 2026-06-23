@@ -1,12 +1,11 @@
-declare global {
-  interface Env extends CloudflareBindings {
-    CLOUDFLARE_ACCOUNT_ID: string;
-    CLOUDFLARE_API_TOKEN: string;
+interface CloudflareBindings {}
 
-    GITHUB_TOKEN?: string;
-    GITHUB_WEBHOOK_SECRET: string;
-  }
+interface Env extends CloudflareBindings {
+  CLOUDFLARE_ACCOUNT_ID: string;
+  CLOUDFLARE_API_TOKEN: string;
+
+  GITHUB_TOKEN?: string;
+  GITHUB_WEBHOOK_SECRET: string;
 }
 
-export {};
-
+declare module "*.md";
