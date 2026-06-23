@@ -107,7 +107,7 @@ export default createWorker({ workflowText });
 template には公開 base image を `FROM` に持つ Dockerfile が含まれます。base image tag は runner image が変わるときだけ更新します。
 
 ```Dockerfile
-FROM ghcr.io/kiyo-e/symphony-workers-base:0.2.0
+FROM ghcr.io/kiyo-e/symphony-workers-base:0.2.2
 ```
 
 `wrangler.jsonc` はこの file を指します。

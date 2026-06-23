@@ -201,14 +201,20 @@ async function main() {
   }
   args.push(job.prompt);
 
+  const agentEnv = {
+    OPENCODE_CONFIG_DIR: opencodeConfigDir,
+    OPENCODE_CONFIG: opencodeConfigPath,
+    CLOUDFLARE_ACCOUNT_ID: process.env.CLOUDFLARE_ACCOUNT_ID,
+    CLOUDFLARE_API_KEY: process.env.CLOUDFLARE_API_KEY,
+  };
+  if (process.env.GITHUB_TOKEN) {
+    agentEnv.GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+    agentEnv.GH_TOKEN = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+  }
+
   const opencode = await run("opencode", args, {
     cwd: repoDir,
-    env: {
-      OPENCODE_CONFIG_DIR: opencodeConfigDir,
-      OPENCODE_CONFIG: opencodeConfigPath,
-      CLOUDFLARE_ACCOUNT_ID: process.env.CLOUDFLARE_ACCOUNT_ID,
-      CLOUDFLARE_API_KEY: process.env.CLOUDFLARE_API_KEY,
-    },
+    env: agentEnv,
     onStdout: queueAgentEvents,
   });
   await eventWriteChain;

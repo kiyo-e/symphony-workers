@@ -31,6 +31,14 @@ function targetFromArgs() {
   return commandOrTarget;
 }
 
+function validateWorkerName(name) {
+  if (!/^(?=.{1,255}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(name)) {
+    throw new Error(
+      `Invalid Worker name: ${name}. Use only letters, numbers, and dashes; start and end with a letter or number.`,
+    );
+  }
+}
+
 async function ensureWritableTarget(target) {
   await mkdir(target, { recursive: true });
   const entries = await readdir(target);
@@ -41,6 +49,7 @@ async function ensureWritableTarget(target) {
 
 async function finalizeTemplate(target) {
   const appName = path.basename(target);
+  validateWorkerName(appName);
 
   const gitignorePath = path.join(target, "gitignore");
   try {
@@ -76,6 +85,7 @@ async function main() {
   }
 
   const target = path.resolve(process.cwd(), targetArg);
+  validateWorkerName(path.basename(target));
   await ensureWritableTarget(target);
   await cp(templateDir, target, { recursive: true });
   await finalizeTemplate(target);

@@ -185,9 +185,12 @@ export interface JobLogsSnapshot {
   runId?: string;
   resultPath?: string;
   eventsPath?: string;
+  processFound?: boolean;
   stdout?: string;
   stderr?: string;
+  eventsStatus?: "available" | "missing" | "unavailable";
   events?: string;
+  resultStatus?: "available" | "missing" | "pending" | "unavailable";
   result?: RunnerResult;
 }
 

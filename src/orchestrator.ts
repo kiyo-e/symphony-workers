@@ -179,14 +179,21 @@ export class ProjectOrchestrator extends DurableObject<Env> {
     const sandbox = getSandbox(this.env.Sandbox, job.sandboxId, { keepAlive: true });
     let stdout: string | undefined;
     let stderr: string | undefined;
+    let processFound: boolean | undefined;
     if (job.processId) {
       const process = (await sandbox.listProcesses()).find((candidate) => candidate.id === job.processId);
+      processFound = Boolean(process);
       if (process) {
         const logs = await process.getLogs();
         stdout = truncate(logs.stdout, 100_000);
         stderr = truncate(logs.stderr, 100_000);
       }
     }
+    const events = await this.readTextFileSnapshot(sandbox, job.eventsPath, 200_000);
+    const result =
+      job.phase === "running" || job.phase === "starting"
+        ? { status: "pending" as const, value: undefined }
+        : await this.readRunnerResultSnapshot(sandbox, job.resultPath);
 
     return {
       issueId: job.issue.id,
@@ -199,10 +206,13 @@ export class ProjectOrchestrator extends DurableObject<Env> {
       runId: job.runId,
       resultPath: job.resultPath,
       eventsPath: job.eventsPath,
+      processFound,
       stdout,
       stderr,
-      events: await this.readTextFile(sandbox, job.eventsPath, 200_000),
-      result: await this.readRunnerResult(sandbox, job.resultPath),
+      eventsStatus: events.status,
+      events: events.value,
+      resultStatus: result.status,
+      result: result.value,
     };
   }
 
@@ -472,6 +482,9 @@ export class ProjectOrchestrator extends DurableObject<Env> {
         [agentProvider.envKey]: "proxy-injected",
         CLOUDFLARE_ACCOUNT_ID: requiredEnv(this.env.CLOUDFLARE_ACCOUNT_ID, "CLOUDFLARE_ACCOUNT_ID"),
         OPENCODE_CONFIG_DIR,
+        ...(this.env.GITHUB_TOKEN
+          ? { GITHUB_TOKEN: this.env.GITHUB_TOKEN, GH_TOKEN: this.env.GITHUB_TOKEN }
+          : {}),
       });
 
       if (job.restoreOnStart && job.backup) {
@@ -518,6 +531,9 @@ export class ProjectOrchestrator extends DurableObject<Env> {
           [agentProvider.envKey]: "proxy-injected",
           CLOUDFLARE_ACCOUNT_ID: requiredEnv(this.env.CLOUDFLARE_ACCOUNT_ID, "CLOUDFLARE_ACCOUNT_ID"),
           OPENCODE_CONFIG_DIR,
+          ...(this.env.GITHUB_TOKEN
+            ? { GITHUB_TOKEN: this.env.GITHUB_TOKEN, GH_TOKEN: this.env.GITHUB_TOKEN }
+            : {}),
         },
       });
       job.phase = "running";
@@ -655,12 +671,24 @@ export class ProjectOrchestrator extends DurableObject<Env> {
     sandbox: ReturnType<typeof getSandbox>,
     path: string | undefined,
   ): Promise<RunnerResult | undefined> {
-    if (!path) return undefined;
+    return (await this.readRunnerResultSnapshot(sandbox, path)).value;
+  }
+
+  private async readRunnerResultSnapshot(
+    sandbox: ReturnType<typeof getSandbox>,
+    path: string | undefined,
+  ): Promise<{
+    status: "available" | "missing" | "unavailable";
+    value?: RunnerResult;
+  }> {
+    if (!path) return { status: "missing" };
     try {
+      const exists = await sandbox.exists(path);
+      if (!exists.exists) return { status: "missing" };
       const file = await sandbox.readFile(path);
-      return JSON.parse(file.content) as RunnerResult;
+      return { status: "available", value: JSON.parse(file.content) as RunnerResult };
     } catch {
-      return undefined;
+      return { status: "unavailable" };
     }
   }
 
@@ -669,12 +697,25 @@ export class ProjectOrchestrator extends DurableObject<Env> {
     path: string | undefined,
     maxLength: number,
   ): Promise<string | undefined> {
-    if (!path) return undefined;
+    return (await this.readTextFileSnapshot(sandbox, path, maxLength)).value;
+  }
+
+  private async readTextFileSnapshot(
+    sandbox: ReturnType<typeof getSandbox>,
+    path: string | undefined,
+    maxLength: number,
+  ): Promise<{
+    status: "available" | "missing" | "unavailable";
+    value?: string;
+  }> {
+    if (!path) return { status: "missing" };
     try {
+      const exists = await sandbox.exists(path);
+      if (!exists.exists) return { status: "missing" };
       const file = await sandbox.readFile(path);
-      return truncate(file.content, maxLength);
+      return { status: "available", value: truncate(file.content, maxLength) };
     } catch {
-      return undefined;
+      return { status: "unavailable" };
     }
   }
 
