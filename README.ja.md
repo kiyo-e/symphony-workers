@@ -107,7 +107,7 @@ export default createWorker({ workflowText });
 template には公開 base image を `FROM` に持つ Dockerfile が含まれます。base image tag は runner image が変わるときだけ更新します。
 
 ```Dockerfile
-FROM ghcr.io/kiyo-e/symphony-workers-base:0.2.2
+FROM ghcr.io/kiyo-e/symphony-workers-base:0.2.3
 ```
 
 `wrangler.jsonc` はこの file を指します。
@@ -177,6 +177,12 @@ bunx wrangler secret put GITHUB_TOKEN
 - Issues: Read
 
 agent に push、Pull Request 作成、Issue 更新を許可する場合は、それぞれに必要な write 権限を意図的に追加してください。Sandbox の GitHub 通信には Worker がこの token を注入するため、token の権限がそのまま agent の最大権限になります。
+
+hooks や agent command へ secret を渡したい場合は、`SANDBOX_ENV_` prefix 付きの Worker secret として登録します。Sandbox 内では prefix を外した名前になります。
+
+```bash
+bunx wrangler secret put SANDBOX_ENV_RAILS_MASTER_KEY
+```
 
 ### 7. デプロイする
 
@@ -248,6 +254,7 @@ ghcr.io/kiyo-e/symphony-workers-base:<version>
 - `X-GitHub-Delivery` は最近の 100 件を保存し、同じ配信 ID の再処理を防ぎます。Webhook の取りこぼしがあっても、次の Webhook、`/tick`、または Durable Object Alarm の照合が走った時点で最新状態に収束します。
 - Sandbox からの outbound 通信は通常どおり有効です。ただし、Cloudflare API と GitHub API への認証ヘッダーは Worker の outbound proxy が注入します。
 - opencode には `CLOUDFLARE_API_KEY=proxy-injected` だけを渡します。実 token は Worker の outbound proxy が `api.cloudflare.com` 宛ての通信へ注入するため、Sandbox 内や repository には残りません。
+- `SANDBOX_ENV_` prefix の Worker secret は、prefix を外した名前で Sandbox に渡します。たとえば `SANDBOX_ENV_RAILS_MASTER_KEY` は `RAILS_MASTER_KEY` になります。値は `wrangler.jsonc`、`.dev.vars`、`WORKFLOW.md` には書かないでください。
 - npm、PyPI、Maven などを hooks または agent が利用する場合は、`Sandbox.allowedHosts` に必要な registry host だけを追加してください。
 - `WORKFLOW.md` の hooks は信頼済みのデプロイ設定です。Issue 本文から shell command を生成しないでください。
 - prompt は shell 経由ではなく、opencode の positional message として直接渡します。

@@ -1,1 +1,1 @@
-FROM ghcr.io/kiyo-e/symphony-workers-base:0.2.2
+FROM ghcr.io/kiyo-e/symphony-workers-base:0.2.3

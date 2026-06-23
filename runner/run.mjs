@@ -211,6 +211,11 @@ async function main() {
     agentEnv.GITHUB_TOKEN = process.env.GITHUB_TOKEN;
     agentEnv.GH_TOKEN = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
   }
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!key.startsWith("SANDBOX_ENV_") || !value) continue;
+    const forwardedKey = key.slice("SANDBOX_ENV_".length);
+    if (forwardedKey) agentEnv[forwardedKey] = value;
+  }
 
   const opencode = await run("opencode", args, {
     cwd: repoDir,
