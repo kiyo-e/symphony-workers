@@ -30,6 +30,7 @@ const COMPLETED_HISTORY_LIMIT = 50;
 const RECENT_DELIVERY_LIMIT = 100;
 const OPENCODE_CONFIG_DIR = "/workspace/.symphony/opencode-config";
 const CLOUDFLARE_WORKERS_AI_ENV_KEY = "CLOUDFLARE_API_KEY";
+const SANDBOX_ENV_PREFIX = "SANDBOX_ENV_";
 const DEFAULT_AGENT_MODEL = "@cf/zai-org/glm-5.2";
 
 function emptyState(): OrchestratorState {
@@ -60,6 +61,20 @@ function agentProviderConfig(env: Env): AgentProviderConfig {
     baseUrl: `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`,
     envKey: CLOUDFLARE_WORKERS_AI_ENV_KEY,
   };
+}
+
+function forwardedAgentSecrets(env: Env): Record<string, string> {
+  const secrets: Record<string, string> = {};
+  if (env.GITHUB_TOKEN) {
+    secrets.GITHUB_TOKEN = env.GITHUB_TOKEN;
+    secrets.GH_TOKEN = env.GITHUB_TOKEN;
+  }
+  for (const [key, value] of Object.entries(env)) {
+    if (!key.startsWith(SANDBOX_ENV_PREFIX) || typeof value !== "string") continue;
+    const forwardedKey = key.slice(SANDBOX_ENV_PREFIX.length);
+    if (forwardedKey) secrets[forwardedKey] = value;
+  }
+  return secrets;
 }
 
 function shouldReconcileIdleJobs(reason: string): boolean {
@@ -482,9 +497,7 @@ export class ProjectOrchestrator extends DurableObject<Env> {
         [agentProvider.envKey]: "proxy-injected",
         CLOUDFLARE_ACCOUNT_ID: requiredEnv(this.env.CLOUDFLARE_ACCOUNT_ID, "CLOUDFLARE_ACCOUNT_ID"),
         OPENCODE_CONFIG_DIR,
-        ...(this.env.GITHUB_TOKEN
-          ? { GITHUB_TOKEN: this.env.GITHUB_TOKEN, GH_TOKEN: this.env.GITHUB_TOKEN }
-          : {}),
+        ...forwardedAgentSecrets(this.env),
       });
 
       if (job.restoreOnStart && job.backup) {
@@ -531,9 +544,7 @@ export class ProjectOrchestrator extends DurableObject<Env> {
           [agentProvider.envKey]: "proxy-injected",
           CLOUDFLARE_ACCOUNT_ID: requiredEnv(this.env.CLOUDFLARE_ACCOUNT_ID, "CLOUDFLARE_ACCOUNT_ID"),
           OPENCODE_CONFIG_DIR,
-          ...(this.env.GITHUB_TOKEN
-            ? { GITHUB_TOKEN: this.env.GITHUB_TOKEN, GH_TOKEN: this.env.GITHUB_TOKEN }
-            : {}),
+          ...forwardedAgentSecrets(this.env),
         },
       });
       job.phase = "running";

@@ -109,7 +109,7 @@ export default createWorker({ workflowText });
 The template includes a Dockerfile based on the published base image. The base image tag changes only when the runner image changes.
 
 ```Dockerfile
-FROM ghcr.io/kiyo-e/symphony-workers-base:0.2.2
+FROM ghcr.io/kiyo-e/symphony-workers-base:0.2.3
 ```
 
 `wrangler.jsonc` points at that file:
@@ -177,6 +177,12 @@ Use a fine-grained token with only these read-only permissions for the target re
 - Metadata: Read
 - Contents: Read
 - Issues: Read
+
+To pass a secret through to hooks or agent commands, register it with the `SANDBOX_ENV_` prefix. The prefix is removed inside the Sandbox:
+
+```bash
+bunx wrangler secret put SANDBOX_ENV_RAILS_MASTER_KEY
+```
 
 If the agent needs to push, create Pull Requests, or update issues, explicitly add the required write permissions. The Worker injects this token into GitHub traffic from the Sandbox, so the token's scope is the upper bound of what the agent can do.
 
@@ -250,6 +256,7 @@ ghcr.io/kiyo-e/symphony-workers-base:<version>
 - The latest 100 `X-GitHub-Delivery` values are stored to prevent reprocessing the same delivery ID. If a webhook is missed, the next webhook, `/tick`, or Durable Object Alarm converges to the latest state.
 - Outbound traffic from the Sandbox is enabled normally. Authentication headers for Cloudflare API and GitHub API requests are injected by the Worker's outbound proxy.
 - opencode only receives `CLOUDFLARE_API_KEY=proxy-injected`. The real token is injected by the Worker's outbound proxy for traffic to `api.cloudflare.com`, so it is not left inside the Sandbox or repository.
+- Worker secrets named with `SANDBOX_ENV_` are forwarded to the Sandbox with that prefix removed. For example, `SANDBOX_ENV_RAILS_MASTER_KEY` becomes `RAILS_MASTER_KEY`. Do not put these values in `wrangler.jsonc`, `.dev.vars`, or `WORKFLOW.md`.
 - If hooks or the agent use npm, PyPI, Maven, or similar registries, add only the required registry hosts to `Sandbox.allowedHosts`.
 - `WORKFLOW.md` hooks are trusted deployment configuration. Do not generate shell commands from issue bodies.
 - Prompts are passed directly as opencode positional messages, not through a shell.
