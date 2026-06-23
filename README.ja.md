@@ -104,10 +104,10 @@ export default createWorker({ workflowText });
 
 ### 2. Base image を設定する
 
-template には公開 base image を `FROM` に持つ Dockerfile が含まれます。base image tag は runner image が変わるときだけ更新します。
+template には公開 base image を `FROM` に持つ Dockerfile が含まれます。base image tag は package version とそろえてください。
 
 ```Dockerfile
-FROM ghcr.io/kiyo-e/symphony-workers-base:0.2.3
+FROM ghcr.io/kiyo-e/symphony-workers-base:0.2.4
 ```
 
 `wrangler.jsonc` はこの file を指します。
@@ -252,10 +252,11 @@ ghcr.io/kiyo-e/symphony-workers-base:<version>
 - GitHub Webhook の secret と GitHub API token は別の値にしてください。
 - Webhook secret は raw body に対する `X-Hub-Signature-256` の検証だけに使います。
 - `X-GitHub-Delivery` は最近の 100 件を保存し、同じ配信 ID の再処理を防ぎます。Webhook の取りこぼしがあっても、次の Webhook、`/tick`、または Durable Object Alarm の照合が走った時点で最新状態に収束します。
-- Sandbox からの outbound 通信は通常どおり有効です。ただし、Cloudflare API と GitHub API への認証ヘッダーは Worker の outbound proxy が注入します。
+- Sandbox からの outbound 通信は通常どおり有効です。runtime は package registry の global allowlist を持ちません。
+- Cloudflare API と GitHub API への認証ヘッダーは Worker の outbound proxy が注入します。
 - opencode には `CLOUDFLARE_API_KEY=proxy-injected` だけを渡します。実 token は Worker の outbound proxy が `api.cloudflare.com` 宛ての通信へ注入するため、Sandbox 内や repository には残りません。
 - `SANDBOX_ENV_` prefix の Worker secret は、prefix を外した名前で Sandbox に渡します。たとえば `SANDBOX_ENV_RAILS_MASTER_KEY` は `RAILS_MASTER_KEY` になります。値は `wrangler.jsonc`、`.dev.vars`、`WORKFLOW.md` には書かないでください。
-- npm、PyPI、Maven などを hooks または agent が利用する場合は、`Sandbox.allowedHosts` に必要な registry host だけを追加してください。
+- deny-by-default の egress 制限が必要な deployment では、app template 側で独自の `Sandbox` class を定義し、そこで `allowedHosts` または `deniedHosts` を設定してください。app template の README に copy-paste 用の例があります。
 - `WORKFLOW.md` の hooks は信頼済みのデプロイ設定です。Issue 本文から shell command を生成しないでください。
 - prompt は shell 経由ではなく、opencode の positional message として直接渡します。
 - opencode は `--dangerously-skip-permissions` で起動します。隔離境界は外側の Cloudflare Sandbox が提供します。

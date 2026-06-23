@@ -13,15 +13,6 @@ export interface CreateWorkerOptions {
 export class Sandbox extends BaseSandbox<Env> {
   interceptHttps = true;
   enableInternet = true;
-  allowedHosts = [
-    "api.cloudflare.com",
-    "github.com",
-    "api.github.com",
-    "raw.githubusercontent.com",
-    "objects.githubusercontent.com",
-    "codeload.github.com",
-    "registry.npmjs.org",
-  ];
 }
 
 async function proxyRequest(
